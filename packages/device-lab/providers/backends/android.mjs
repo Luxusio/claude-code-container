@@ -28,7 +28,7 @@ import { fail, jsonResult, textResult } from "../responses.mjs";
 import { resolveAndroidEmulatorPort, validAndroidEmulatorPort, withAndroidEmulatorPortAllocation } from "../state/android-emulator-port-allocation.mjs";
 import { androidAvdHome, listOwnedAndroidAvdArtifacts, removeOwnedAndroidAvdArtifacts } from "../state/android-avd-storage.mjs";
 import { readAndroidAvdIdentity } from "../state/android-avd-identity.mjs";
-import { canonicalWindowsPowerShellPath } from "../state/windows-system-powershell.mjs";
+import { canonicalWindowsPowerShellPath, canonicalWindowsSystemExecutablePath } from "../state/windows-system-powershell.mjs";
 import { claimAndroidDevice, findAndroidDevice, mutateAndroidDevices, readAndroidDevices, transitionAndroidDevice, updateAndroidDevice } from "../state/android-state.mjs";
 import { withOwnerDeviceOperation } from "../state/device-store.mjs";
 import { requiresOwnerDeviceOperation } from "../state/device-operation-policy.mjs";
@@ -685,9 +685,39 @@ function presentAndroidLifecycleOutcome(outcome) {
 async function terminateFreshAndroidEmulatorProcessTree(child) {
     if (!child?.pid) return { ok: false, exited: false, reason: "spawned-process-pid-missing" };
     if (process.platform === "win32") {
-        const result = run("taskkill", ["/PID", String(child.pid), "/T", "/F"], { timeout: 10_000 });
-        const exited = await waitForProcessExit(child.pid, 3000);
-        return { ok: result.status === 0 && exited, exited, method: "taskkill-tree", status: result.status, stderr: result.stderr, stdout: result.stdout };
+        // Capture the existing native command plus exit grace once. The returned
+        // ChildProcess witnesses this allocation's exit even if its PID is reused.
+        const deadline = performance.now() + 13_000;
+        const remaining = () => Math.max(0, deadline - performance.now());
+        let onClose = () => {};
+        const closed = new Promise(resolve => {
+            onClose = () => resolve(true);
+            child.once("close", onClose);
+            if (typeof child.exitCode === "number" || typeof child.signalCode === "string") onClose();
+        });
+        let timer;
+        try {
+            const taskkill = canonicalWindowsSystemExecutablePath("taskkill.exe");
+            if (typeof child.exitCode === "number" || typeof child.signalCode === "string") {
+                return { ok: false, exited: true, method: "child-handle", reason: "fresh-root-exited-before-tree-cleanup" };
+            }
+            const timeout = Math.floor(Math.min(10_000, remaining()));
+            const result = taskkill && timeout >= 1
+                ? run(taskkill, ["/PID", String(child.pid), "/T", "/F"], { timeout })
+                : { status: null, stdout: "", stderr: "windows-system-taskkill-unavailable" };
+            const exitDeadline = Math.min(deadline, performance.now() + 3000);
+            const exitRemaining = () => Math.max(0, exitDeadline - performance.now());
+            const closedInTime = exitRemaining() >= 1 && await Promise.race([
+                closed,
+                new Promise(resolve => { timer = setTimeout(() => resolve(false), Math.ceil(exitRemaining())); }),
+            ]);
+            const exited = closedInTime === true && exitRemaining() >= 1;
+            return { ok: result.status === 0 && exited, exited,
+                method: "taskkill-tree", status: result.status, stderr: result.stderr, stdout: result.stdout };
+        } finally {
+            if (timer) clearTimeout(timer);
+            child.removeListener("close", onClose);
+        }
     }
     let error = null;
     try {

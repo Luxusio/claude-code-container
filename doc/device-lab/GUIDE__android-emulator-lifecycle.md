@@ -19,7 +19,9 @@ AVD root/artifact identity, persisted claims, command execution, hidden launcher
 assets, real spawn handles, process identity, recording/runtime termination and
 boot observation. An application port represents one native step, not a complete
 legacy operation. Access occurs at the original phase, with mutable carriers and
-raw errors preserved.
+raw errors preserved. Windows process-identity JSON is emitted explicitly as
+UTF-8 so Unicode command-line arguments retain the canonical native SHA-256
+identity; command text is neither normalized nor rewritten for comparison.
 
 The broker application returns semantic lifecycle facts. Provider preparation
 exposes an opaque capability for one native effect; executable paths, argument
@@ -34,6 +36,25 @@ false stopped state. Delete retains force, owned AVD and liveness checks before
 cleanup and removal. The direct and broker variants intentionally differ: direct
 DTOs include their existing null fields; broker DTO omissions, dry runs,
 idempotence and execution diagnostics retain their own contracts.
+
+Direct start gives the actual spawned process a separate, bounded 10-second
+identity-capture phase, matching the native identity producer's existing
+10-second allowance. Each native identity probe remains capped at 5 seconds
+and the captured phase remainder; a positive observation arriving after the
+phase expires grants no identity authority. Missing or late identity triggers
+fresh-child rollback and preserves unresolved runtime state if cleanup cannot
+be confirmed. This phase starts after spawn and completes before boot polling.
+`bootTimeoutMs` remains the separate post-identity boot-polling allowance;
+`waitForBoot: false` skips boot polling but still requires process identity.
+
+Fresh Windows rollback resolves `System32/taskkill.exe` through the canonical
+system executable resolver, independent of caller `PATH`. Its existing
+10-second native-command cap and 3-second exit grace share one captured
+13-second ceiling. The exit grace starts when the native command returns and
+cannot exceed either 3 seconds or the remaining aggregate allowance. The exact
+returned child handle must acknowledge process
+exit; absence of a PID or completion of a different process is not proof.
+Tree termination remains unsuccessful when native tree cleanup is unconfirmed.
 
 Broker publication uses the reviewed complete-record conditional transition and
 advances its expected record after committed auxiliary cleanup. This fences

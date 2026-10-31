@@ -1,5 +1,9 @@
 import { androidLifecycleRefused, androidLifecycleConflict } from "../../domain/lifecycle/android-emulator-lifecycle.mjs";
 
+// Identity capture is a separate native phase, bounded like the native identity
+// producer. Boot polling retains its own caller-selected allowance afterward.
+const ANDROID_EMULATOR_START_IDENTITY_TIMEOUT_MS = 10_000;
+
 /** @param {boolean} adbAvailable
  * @param {number} timeoutMs
  * @param {import('../../ports/lifecycle/android-emulator-lifecycle.mjs').AndroidEmulatorBootConfirmationPorts} ports
@@ -276,7 +280,7 @@ export function createAndroidEmulatorLifecycle(ports) {
             ports.transitionAndroidDevice(deviceId, claimed, device);
             return androidLifecycleRefused(`Android Emulator failed to start: ${error instanceof Error ? error.message : String(error)}`);
         }
-        const processIdentity = await ports.waitForProcessIdentity(child.pid, 1000);
+        const processIdentity = await ports.waitForProcessIdentity(child.pid, ANDROID_EMULATOR_START_IDENTITY_TIMEOUT_MS);
         if (!processIdentity) {
             const termination = await ports.terminateFreshAndroidEmulatorProcessTree(child);
             const unresolved = {

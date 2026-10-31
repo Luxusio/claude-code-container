@@ -6133,6 +6133,7 @@ export async function terminateBrokerSpawnedProcessTreeAsync(
 
 function windowsBrokerPortProcessProbeScript(pid: number): string {
     return [
+        "[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)",
         `$p = Get-CimInstance Win32_Process -Filter "ProcessId=${pid}"`,
         `$h = Get-Process -Id ${pid} -ErrorAction SilentlyContinue`,
         "if (-not $p -or -not $h) { exit 1 }",
@@ -8503,7 +8504,7 @@ async function defaultBrokerDeviceToolRunner(ownerId: string, parsed: DeviceTool
 }
 
 export function boundedProviderCommandRunnerScript() {
-    const windowsTerminationScript = JSON.stringify(windowsHandleBoundTerminationScript());
+    const windowsTerminationScript = JSON.stringify(windowsHandleBoundTerminationScript(true));
     return String.raw`
 const { spawn, spawnSync, execFile } = require("node:child_process");
 const { createHash } = require("node:crypto");
@@ -8621,7 +8622,7 @@ function processIdentity(pid, remainingMs) {
 }
 
 function windowsProcessIdentityArgs(pid) {
-    const script = "$P = Get-CimInstance Win32_Process -Filter 'ProcessId = " + pid + "' -ErrorAction SilentlyContinue; $H = Get-Process -Id " + pid + " -ErrorAction SilentlyContinue; if ($P -and $H) { [pscustomobject]@{ startToken = ${windowsStartTokenExpression("$H")}; commandLine = [string]$P.CommandLine } | ConvertTo-Json -Compress }";
+    const script = "[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false); $P = Get-CimInstance Win32_Process -Filter 'ProcessId = " + pid + "' -ErrorAction SilentlyContinue; $H = Get-Process -Id " + pid + " -ErrorAction SilentlyContinue; if ($P -and $H) { [pscustomobject]@{ startToken = ${windowsStartTokenExpression("$H")}; commandLine = [string]$P.CommandLine } | ConvertTo-Json -Compress }";
     return ["-WindowStyle", "Hidden", "-NoProfile", "-NonInteractive", "-Command", script];
 }
 
@@ -8671,6 +8672,49 @@ function terminateTree(pid, expectedIdentity) {
     if (!completionRemainingMs()) {
         return { attempted: false, ok: false, pid, signal: "SIGKILL", platform: process.platform, error: "spawned-process-identity-unavailable" };
     }
+    if (process.platform === "win32") {
+        if (expectedIdentity.pid !== pid) {
+            return { attempted: false, ok: false, pid, signal: "SIGKILL", platform: process.platform, error: "spawned-process-identity-mismatch" };
+        }
+        if (typeof payload.windowsPowerShellPath !== "string" || !payload.windowsPowerShellPath) {
+            return { attempted: false, ok: false, pid, signal: "SIGKILL", platform: process.platform, error: "windows-system-powershell-unavailable" };
+        }
+        // The native helper qualifies the complete saved identity and pins the
+        // root handle before taking its descendant snapshot. A separate CIM
+        // process here would spend the same captured cleanup allowance twice.
+        const remaining = completionRemainingMs();
+        if (!remaining) {
+            return { attempted: false, ok: false, pid, signal: "SIGKILL", platform: process.platform, error: "spawned-process-identity-unavailable" };
+        }
+        const result = spawnSync(payload.windowsPowerShellPath, ["-WindowStyle", "Hidden", "-NoProfile", "-NonInteractive", "-Command", windowsTerminationScript], {
+            encoding: "utf8",
+            windowsHide: true,
+            timeout: Math.min(11000, remaining),
+            env: {
+                ...process.env,
+                CCC_WINDOWS_TERMINATE_PID: String(pid),
+                CCC_WINDOWS_TERMINATE_START_TOKEN: expectedIdentity.startToken,
+                CCC_WINDOWS_TERMINATE_COMMAND_HASH: expectedIdentity.commandHash,
+                CCC_WINDOWS_TERMINATE_TIMEOUT_MS: String(Math.min(10000, remaining)),
+            },
+        });
+        const output = boundedText(String(result.stdout || "") + "\n" + String(result.stderr || ""));
+        const ok = result.status === 0 && completionRemainingMs() > 0;
+        return {
+            attempted: result.status !== 3 && result.status !== 5,
+            ok,
+            pid,
+            signal: "SIGKILL",
+            platform: process.platform,
+            ...(ok ? {} : {
+                error: result.status === 3
+                    ? "spawned-process-identity-mismatch"
+                    : result.status === 5 ? "spawned-process-identity-unavailable"
+                    : result.status === 0 ? "process-termination-timeout"
+                    : output.trim() || (result.error && result.error.message) || "process handle termination failed",
+            }),
+        };
+    }
     const currentIdentity = processIdentity(pid, completionRemainingMs);
     if (!currentIdentity) {
         if (completionRemainingMs() && child && (child.exitCode !== null || child.signalCode !== null)) {
@@ -8683,40 +8727,8 @@ function terminateTree(pid, expectedIdentity) {
         || currentIdentity.commandHash !== expectedIdentity.commandHash) {
         return { attempted: false, ok: false, pid, signal: "SIGKILL", platform: process.platform, error: "spawned-process-identity-mismatch" };
     }
-    const remaining = completionRemainingMs();
-    if (!remaining) {
+    if (!completionRemainingMs()) {
         return { attempted: false, ok: false, pid, signal: "SIGKILL", platform: process.platform, error: "spawned-process-identity-unavailable" };
-    }
-    if (process.platform === "win32") {
-        if (typeof payload.windowsPowerShellPath !== "string" || !payload.windowsPowerShellPath) {
-            return { attempted: false, ok: false, pid, signal: "SIGKILL", platform: process.platform, error: "windows-system-powershell-unavailable" };
-        }
-        const result = spawnSync(payload.windowsPowerShellPath, ["-WindowStyle", "Hidden", "-NoProfile", "-NonInteractive", "-Command", windowsTerminationScript], {
-            encoding: "utf8",
-            windowsHide: true,
-            timeout: Math.min(11000, remaining),
-            env: {
-                ...process.env,
-                CCC_WINDOWS_TERMINATE_PID: String(pid),
-                CCC_WINDOWS_TERMINATE_START_TOKEN: expectedIdentity.startToken,
-                CCC_WINDOWS_TERMINATE_TIMEOUT_MS: String(Math.min(10000, remaining)),
-            },
-        });
-        const output = boundedText(String(result.stdout || "") + "\n" + String(result.stderr || ""));
-        const ok = result.status === 0 && completionRemainingMs() > 0;
-        return {
-            attempted: true,
-            ok,
-            pid,
-            signal: "SIGKILL",
-            platform: process.platform,
-            ...(ok ? {} : {
-                error: result.status === 3
-                    ? "spawned-process-identity-mismatch"
-                    : result.status === 0 ? "process-termination-timeout"
-                    : output.trim() || (result.error && result.error.message) || "process handle termination failed",
-            }),
-        };
     }
     try {
         process.kill(-pid, "SIGKILL");

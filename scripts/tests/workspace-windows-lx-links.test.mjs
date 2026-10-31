@@ -135,8 +135,9 @@ function workspace(t, { otherPhysical = false, tag = "0xa000001d", platform = "w
             // Build admission also observes its own process through the shared-lock
             // SDK on native Windows. Keep that observation separate from LX repair.
             assert.deepEqual(args.slice(0, -1), ["-WindowStyle", "Hidden", "-NoProfile", "-NonInteractive", "-Command"]);
-            assert.match(args.at(-1), new RegExp(`Get-CimInstance Win32_Process -Filter 'ProcessId = ${process.pid}'`));
-            assert.match(args.at(-1), new RegExp(`Get-Process -Id ${process.pid} -ErrorAction SilentlyContinue`));
+            assert.equal(args.at(-1), "[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false); $P = Get-CimInstance Win32_Process -Filter 'ProcessId = " + process.pid
+                + "' -ErrorAction SilentlyContinue; $H = Get-Process -Id " + process.pid
+                + " -ErrorAction SilentlyContinue; if ($P -and $H) { [pscustomobject]@{ startToken = $H.StartTime.ToUniversalTime().ToString('o'); commandLine = [string]$P.CommandLine } | ConvertTo-Json -Compress }");
             assert.equal(options.windowsHide, true);
             assert.equal(options.killSignal, "SIGKILL");
             assert.ok(options.timeout > 0 && options.timeout <= 5_000);

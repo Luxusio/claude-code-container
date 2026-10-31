@@ -12120,7 +12120,10 @@ function androidHttpFixtureProcessRunning(pid: number): boolean {
 }
 
 async function createAndroidHttpFixture(phase: AndroidHttpFixturePhase, helperOptions: { startupMs?: number; progressMode?: "invalid" | "partial-final" } = {}) {
-    const root = mkdtempSync(join(tmpdir(), 'ccc-emitted-android-http-'));
+    // These held cleanup commands must hash the same Unicode argv through the
+    // initial JSON identity probe and the native CIM termination helper.
+    const root = mkdtempSync(join(tmpdir(), ['owner-cleanup', 'macos-owner-cleanup'].includes(phase)
+        ? 'ccc-emitted-android-http-한글-😀-' : 'ccc-emitted-android-http-'));
     const home = join(root, 'home'), bin = join(root, 'bin'), temporary = join(root, 'tmp');
     for (const directory of [home, bin, temporary]) mkdirSync(directory);
     // TMPDIR may place this owned fixture below the repository's ESM package.
@@ -12139,6 +12142,21 @@ async function createAndroidHttpFixture(phase: AndroidHttpFixturePhase, helperOp
     writeFileSync(preload, nodeProviderFixturePreloadSource(bin) + fakeAndroidLauncherPreloadSource(bin) + `
 // Isolate only the fake SDK's global inventory; PID/birth/command probes remain native.
 const androidHttpInventorySpawn = cp.spawn;
+const androidHttpNativeSpawnSync = cp.spawnSync;
+cp.spawnSync = function(command, args = [], options = {}) {
+    const script = args.at(-1);
+    if (path.win32.basename(command).toLowerCase() === 'powershell.exe' && typeof script === 'string') {
+        const identityPid = script.match(/Get-CimInstance Win32_Process -Filter 'ProcessId = (\\d+)'/);
+        const treePid = options.env?.CCC_WINDOWS_TERMINATE_PID;
+        if (identityPid || treePid && script.includes('CCC_WINDOWS_TERMINATE_COMMAND_HASH')) {
+            fs.appendFileSync(path.join(process.env.HOME, 'cleanup-native.log'), JSON.stringify({
+                kind: identityPid ? 'identity' : 'qualified-tree', pid: Number(identityPid?.[1] || treePid),
+                commandHash: options.env?.CCC_WINDOWS_TERMINATE_COMMAND_HASH, timeoutMs: options.timeout,
+            }) + '\\n');
+        }
+    }
+    return androidHttpNativeSpawnSync.call(this, command, args, options);
+};
 cp.spawn = function(command, args = [], options = {}) {
     const probeArgs = args[0] === '-WindowStyle' && args[1] === 'Hidden' ? args.slice(2) : args;
     const posixInventory = command === '/bin/ps' && probeArgs.length === 2 && probeArgs[0] === '-eo' && probeArgs[1] === 'args=';
@@ -12380,6 +12398,15 @@ describe('emitted default-runner Android HTTP responsiveness', () => {
                     stop: {attempted: true, ok: false, execution: {provider: 'adb', timedOut: true, status: process.platform === 'win32' ? 4294967295 : null}}}]}]}}});
             const execution = reply.body.result.results[0].devices[0].stop.execution;
             expect(execution.cleanup).toEqual(expect.objectContaining({attempted: expect.any(Boolean), ok: expect.any(Boolean)}));
+            if (process.platform === 'win32') {
+                const cleanupCalls = readFileSync(join(fixture.home, 'cleanup-native.log'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+                const ownedCleanupCalls = cleanupCalls.filter(call => call.pid === nativePid);
+                expect(ownedCleanupCalls).toEqual([expect.objectContaining({
+                    kind: 'qualified-tree', commandHash: expect.stringMatching(/^[a-f0-9]{64}$/), timeoutMs: expect.any(Number),
+                })]);
+                expect(ownedCleanupCalls[0].timeoutMs).toBeGreaterThan(0);
+                expect(ownedCleanupCalls[0].timeoutMs).toBeLessThanOrEqual(2000);
+            }
             expect(fixture.records()).toEqual([expect.objectContaining({...fixture.initial, appium: null, status: 'running'})]);
             expect(fixture.nativeCalls().filter(call => call.tool === 'adb' && call.args.at(-1) === 'kill')).toHaveLength(1);
             expect(fixture.nativeCalls().some(call => call.tool === 'adb' && call.args[0] === 'devices')).toBe(false);
@@ -12711,6 +12738,15 @@ describe('emitted default-runner macOS HTTP responsiveness', () => {
             expect(reply).toMatchObject({status: 200, body: {ok: false, result: {changedDevices: 0, failed: 1,
                 results: [{stateKey: 'macos', devices: [{deviceId: 'responsive-mac', stop: {attempted: true, ok: false,
                     execution: {provider: 'tart', timedOut: true, status: process.platform === 'win32' ? 4294967295 : null}}}]}]}}});
+            if (process.platform === 'win32') {
+                const cleanupCalls = readFileSync(join(fixture.home, 'cleanup-native.log'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+                const ownedCleanupCalls = cleanupCalls.filter(call => call.pid === nativePid);
+                expect(ownedCleanupCalls).toEqual([expect.objectContaining({
+                    kind: 'qualified-tree', commandHash: expect.stringMatching(/^[a-f0-9]{64}$/), timeoutMs: expect.any(Number),
+                })]);
+                expect(ownedCleanupCalls[0].timeoutMs).toBeGreaterThan(0);
+                expect(ownedCleanupCalls[0].timeoutMs).toBeLessThanOrEqual(2000);
+            }
             expect(fixture.records()).toEqual([fixture.initial]);
             expect(existsSync(join(fixture.home, 'stop-requested'))).toBe(false);
             expect(existsSync(join(fixture.home, 'active-macos'))).toBe(true);

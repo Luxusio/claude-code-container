@@ -1,7 +1,10 @@
 import * as childProcess from "child_process";
 import * as fileSystem from "fs";
+import { createHash } from "node:crypto";
+import { once } from "node:events";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as windowsSystem from "@ccc/device-lab/windows-system-powershell.js";
+import { readProcessIdentity, readProcessIdentityAsync } from "@ccc/device-lab/providers/state/process-identity.mjs";
 import {
     deviceRuntimeProcessIdentityMatches,
     inspectDeviceRuntimeProcessIdentity,
@@ -86,10 +89,52 @@ describe("broker device runtime process identity", () => {
 
     it("uses the acquired Windows process handle as the canonical start-token source", () => {
         const script = windowsProcessIdentityScriptForTest(321);
+        expect(script).toMatch(/^\[Console\]::OutputEncoding = \[Text.UTF8Encoding\]::new\(\$false\); /);
         expect(script).toContain("$H = Get-Process -Id 321");
         expect(script).toContain("startToken = $H.StartTime.ToUniversalTime().ToString('o')");
         expect(script).toContain("commandLine = [string]$P.CommandLine");
         expect(script).not.toContain("startToken = $P.CreationDate");
+    });
+
+    it.runIf(process.platform === "win32")("hashes the raw Unicode Windows command line identically through both public identity bindings", { timeout: 30000 }, async () => {
+        const unicodeArgument = "recording-\u65e5\u672c\u8a9e-\u00e9-e\u0301-\ud83d\ude80";
+        const child = childProcess.spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)", unicodeArgument], { stdio: "ignore", windowsHide: true });
+        const closed = new Promise<void>(resolve => { child.once("close", () => resolve()); });
+        let joinTimer: ReturnType<typeof setTimeout> | undefined;
+        try {
+            await once(child, "spawn");
+            const powershell = windowsSystem.canonicalWindowsPowerShellPath();
+            if (!powershell) throw new Error("canonical Windows PowerShell unavailable for owned child probe");
+            // Base64 carries the raw UTF-16 command line over an ASCII-only
+            // channel, independently of either JSON identity producer.
+            const raw = childProcess.spawnSync(powershell, ["-NoProfile", "-NonInteractive", "-Command",
+                `$P = Get-CimInstance Win32_Process -Filter 'ProcessId = ${child.pid}' -ErrorAction Stop; if (!$P) { throw 'owned child missing' }; [Console]::Out.Write([Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes([string]$P.CommandLine)))`,
+            ], { encoding: "ascii", timeout: 5000, killSignal: "SIGKILL", windowsHide: true, maxBuffer: 64 * 1024 });
+            expect(raw.error).toBeUndefined();
+            expect(raw.status, raw.stderr).toBe(0);
+            expect(raw.stdout.trim()).toMatch(/^[A-Za-z0-9+/]+={0,2}$/);
+            const commandLine = Buffer.from(raw.stdout.trim(), "base64").toString("utf16le");
+            expect(commandLine).toContain(unicodeArgument);
+            const expectedHash = createHash("sha256").update(commandLine).digest("hex");
+            const identities = [
+                readDeviceRuntimeProcessIdentity(child.pid),
+                await readDeviceRuntimeProcessIdentityAsync(child.pid),
+                readProcessIdentity(child.pid),
+                await readProcessIdentityAsync(child.pid),
+            ];
+            for (const identity of identities) {
+                expect(identity).toMatchObject({ pid: child.pid, commandHash: expectedHash });
+                expect(identity).toEqual(identities[0]);
+                expect(identity).not.toHaveProperty("commandLine");
+            }
+        } finally {
+            if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+            try {
+                await Promise.race([closed, new Promise<never>((_resolve, reject) => {
+                    joinTimer = setTimeout(() => reject(new Error("owned Unicode child join timed out")), 5000);
+                })]);
+            } finally { if (joinTimer) clearTimeout(joinTimer); }
+        }
     });
 
     it("refuses to signal a reused pid", () => {

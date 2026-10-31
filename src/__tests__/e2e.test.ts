@@ -3,6 +3,8 @@ import { spawnSync, execFileSync } from 'child_process'
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
+import { deviceLabContainerName } from '@ccc/device-lab/device-lab-owner.js'
+import { normalizeProfile } from '../home-layout.js'
 import { deviceLabTestHomeEnvironment } from './helpers/device-lab-test-environment.js'
 
 // Check Docker availability
@@ -213,12 +215,24 @@ describe.skipIf(!isDockerAvailable() || isInsideContainer())('E2E: Docker Integr
             expect(result.stdout).toContain('Container stopped')
         })
 
-        it('ccc rm removes the container', { timeout: 30000 }, () => {
-            // First ensure container exists
-            runCcc(['echo', 'setup'], { cwd: testProjectDir, timeout: 60000 })
-            // Then remove it
-            const result = runCcc(['rm'], { cwd: testProjectDir, timeout: 30000 })
-            expect(result.stdout).toContain('Container removed')
+        describe('Container removal', () => {
+            beforeAll(() => {
+                const setup = runCcc(['echo', 'setup'], { cwd: testProjectDir, timeout: 60000 })
+                expect(setup.status, cccDiagnostic(setup)).toBe(0)
+            }, 60000)
+
+            it('ccc rm removes the container', { timeout: 30000 }, () => {
+                const result = runCcc(['rm'], { cwd: testProjectDir, timeout: 30000 })
+                expect(result.status, cccDiagnostic(result)).toBe(0)
+                expect(result.stdout, cccDiagnostic(result)).toContain('Container removed')
+
+                const ps = spawnSync('docker', ['ps', '-a', '--format', '{{.Names}}'], {
+                    encoding: 'utf-8', timeout: 5000,
+                })
+                expect(ps.status, ps.stderr).toBe(0)
+                const containerName = deviceLabContainerName(testProjectDir, normalizeProfile(process.env.CCC_PROFILE))
+                expect(ps.stdout.trim().split(/\r?\n/)).not.toContain(containerName)
+            })
         })
     })
 

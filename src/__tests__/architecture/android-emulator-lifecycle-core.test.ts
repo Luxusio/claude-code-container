@@ -549,9 +549,31 @@ describe("canonical direct Android emulator lifecycle policy", () => {
         const original = stoppedDevice(), f = directLifecyclePorts(original);
         const result = await createAndroidEmulatorLifecycle(f.ports).start({ deviceId: original.id });
         expect(result).toMatchObject({ kind: "started", boot: { ready: true }, device: { status: "running", bootReady: true, extra: original.extra } });
-        expect(f.trace).toEqual(["discovery", "live-ports", "transition", "spawn", "identity:1000", "transition", "boot", "transition"]);
+        expect(f.trace).toEqual(["discovery", "live-ports", "transition", "spawn", "identity:10000", "transition", "boot", "transition"]);
         expect(f.transitions[0].expected).toBe(original); expect(f.current()?.runtime).toMatchObject({ pid: f.child.pid, processIdentity: { startToken: "native-token" } });
     });
+    it.each([true, false])("identity capture has its own bounded phase before optional boot polling (waitForBoot=%s)", async waitForBoot => {
+        const original = stoppedDevice(), f = directLifecyclePorts(original);
+        const identityReady = deferredAndroidEffect<unknown | null>();
+        const identityAllowances: number[] = [], bootAllowances: number[] = [];
+        f.ports.waitForProcessIdentity = async (pid, timeout) => {
+            expect(pid).toBe(f.child.pid);
+            identityAllowances.push(timeout);
+            return identityReady.promise;
+        };
+        f.ports.waitForAndroidBoot = async (_discovery, _device, timeout, child) => {
+            expect(child).toBe(f.child); bootAllowances.push(timeout); return {ready: true};
+        };
+        const start = createAndroidEmulatorLifecycle(f.ports).start({deviceId: original.id, waitForBoot, bootTimeoutMs: 731});
+        await Promise.resolve();
+        expect(identityAllowances).toEqual([10_000]);
+        expect(bootAllowances).toEqual([]);
+        expect(f.current()?.runtime).toBeUndefined();
+        identityReady.resolve({startToken: "native-token"});
+        expect(await start).toMatchObject({kind: "started"});
+        expect(bootAllowances).toEqual(waitForBoot ? [731] : []);
+    });
+
     it("unavailable identity contains the actual child and retains unresolved runtime only when native termination fails", async () => {
         const original = stoppedDevice(), f = directLifecyclePorts(original); f.ports.waitForProcessIdentity = async () => null;
         const app = createAndroidEmulatorLifecycle(f.ports);

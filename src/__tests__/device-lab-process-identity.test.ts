@@ -634,6 +634,7 @@ describe("device runtime process identity", () => {
             expect(first).toMatchObject({ pid: 42, startToken: "windows:birth" });
             const native = asynchronous ? execFile : spawnSync;
             expect(native.mock.calls[0][2]).toMatchObject({ timeout: 37, windowsHide: true, killSignal: "SIGKILL" });
+            expect((native.mock.calls[0][1] as string[]).at(-1)).toMatch(/^\[Console\]::OutputEncoding = \[Text.UTF8Encoding\]::new\(\$false\); /);
             if (asynchronous) execFile.mockImplementation(((_executable: unknown, _args: unknown, _options: unknown, callback: any) => {
                 clock.advance(38); callback(null, output, "");
             }) as any);

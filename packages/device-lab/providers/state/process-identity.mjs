@@ -87,7 +87,7 @@ function windowsProcessIdentity(pid, remainingMs) {
 }
 
 function windowsProcessIdentityScript(pid) {
-    return `$P = Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}' -ErrorAction SilentlyContinue; $H = Get-Process -Id ${pid} -ErrorAction SilentlyContinue; if ($P -and $H) { [pscustomobject]@{ startToken = $H.StartTime.ToUniversalTime().ToString('o'); commandLine = [string]$P.CommandLine } | ConvertTo-Json -Compress }`;
+    return `[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false); $P = Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}' -ErrorAction SilentlyContinue; $H = Get-Process -Id ${pid} -ErrorAction SilentlyContinue; if ($P -and $H) { [pscustomobject]@{ startToken = $H.StartTime.ToUniversalTime().ToString('o'); commandLine = [string]$P.CommandLine } | ConvertTo-Json -Compress }`;
 }
 
 function parseWindowsProcessIdentity(pid, output) {

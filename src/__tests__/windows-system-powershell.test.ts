@@ -1,4 +1,5 @@
 import * as childProcess from "child_process";
+import { once } from "node:events";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { dirname, join } from "path";
@@ -15,6 +16,7 @@ import {
     terminateWindowsProcessByStartTokenAsync,
     windowsHandleBoundTerminationScript,
 } from "@ccc/device-lab/windows-system-powershell.js";
+import { readDeviceRuntimeProcessIdentityAsync } from "@ccc/device-lab/device-lab-process-identity.js";
 
 vi.mock("child_process", async (importOriginal) => ({
     ...await importOriginal<typeof import("child_process")>(),
@@ -262,6 +264,41 @@ describe("canonical Windows PowerShell", () => {
         expect(script).toContain("$Root.Kill()");
         expect(script).not.toContain("taskkill");
     });
+
+    it.runIf(process.platform === "win32").each(["matching", "mismatched-hash", "unavailable-cim"] as const)(
+        "qualifies an owned native process and preserves %s identity outcomes", { timeout: 20000 }, async outcome => {
+            const powershell = canonicalWindowsPowerShellPath();
+            if (!powershell) throw new Error("Native Windows qualification requires system PowerShell");
+            const child = childProcess.spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+                windowsHide: true, stdio: "ignore",
+            });
+            const closed = once(child, "close");
+            try {
+                await once(child, "spawn");
+                const identity = await readDeviceRuntimeProcessIdentityAsync(child.pid);
+                if (!identity) throw new Error("Owned native qualification fixture identity unavailable");
+                const commandHash = outcome === "mismatched-hash"
+                    ? (identity.commandHash.startsWith("0") ? "1" : "0") + identity.commandHash.slice(1)
+                    : identity.commandHash;
+                const script = (outcome === "unavailable-cim"
+                    ? "function Get-CimInstance { throw 'owned fixture CIM unavailable' }; " : "")
+                    + windowsHandleBoundTerminationScript(true);
+                const result = childProcess.spawnSync(powershell,
+                    hiddenWindowsPowerShellArgs(["-NoProfile", "-NonInteractive", "-Command", script]), {
+                        encoding: "utf8", timeout: 10000, windowsHide: true,
+                        env: { ...process.env, CCC_WINDOWS_TERMINATE_PID: String(child.pid),
+                            CCC_WINDOWS_TERMINATE_START_TOKEN: identity.startToken,
+                            CCC_WINDOWS_TERMINATE_COMMAND_HASH: commandHash, CCC_WINDOWS_TERMINATE_TIMEOUT_MS: "5000" },
+                    });
+                expect(result.error, result.stderr).toBeUndefined();
+                expect(result.status, result.stderr).toBe(outcome === "matching" ? 0 : outcome === "mismatched-hash" ? 3 : 5);
+                if (outcome === "matching") await closed;
+                else expect(child.kill(0), "Refused qualification must leave the owned process alive").toBe(true);
+            } finally {
+                if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+                await closed;
+            }
+        });
 });
 
 describe("Windows handle termination remaining allowance", () => {

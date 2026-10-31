@@ -687,9 +687,23 @@ describe("npm package contents", () => {
 
     it("runs the Level 0 entrypoint against the bundled MCP server", { timeout: 30000 }, async () => {
         const { run } = await import("../../scripts/real-tests/level0-package-smoke.ts");
-        const result = await run();
-        expect(result.status).toBe("PASS");
-        expect(result.installedMcpSmoke.publicDispatchTools).toBe(result.installedMcpSmoke.tools);
-        expect(result.installedMcpSmoke.currentDisplayCapabilities).toEqual(expect.arrayContaining(["status"]));
+        const homeDir = mkdtempSync(join(tmpdir(), "ccc-level0-package-smoke-"));
+        try {
+            const result = await run({
+                homeDir,
+                env: {
+                    ...Object.fromEntries(Object.keys(process.env).map(key => [key, ""])),
+                    ...deviceLabTestHomeEnvironment(homeDir),
+                    PATH: "",
+                    SYSTEMROOT: process.env.SYSTEMROOT || "",
+                    WINDIR: process.env.WINDIR || "",
+                },
+            });
+            expect(result.status).toBe("PASS");
+            expect(result.installedMcpSmoke.publicDispatchTools).toBe(result.installedMcpSmoke.tools);
+            expect(result.installedMcpSmoke.currentDisplayCapabilities).toEqual(expect.arrayContaining(["status"]));
+        } finally {
+            rmSync(homeDir, { recursive: true, force: true });
+        }
     });
 });

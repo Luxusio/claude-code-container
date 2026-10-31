@@ -40,7 +40,12 @@ function fixture(recording: RecordingRecord = active, kind: AndroidRecordingPort
         target: device => ({ kind: "ready", device, target: { kind: "adb", executable: "/allocated/adb", prefix: ["-s", String(device.serial)] } }),
         spawnRecorder: () => { throw new Error("Unexpected new recorder"); }, readIdentity: () => identity,
         observe: () => ({ status: state.local }), alive: () => state.local !== "exited",
-        signal() { effects.push("signal"); state.onSignal(); if (state.signalExits) state.local = "exited"; return { signaled: true }; },
+        signal() {
+            if (state.local === "unavailable") return { signaled: false, reason: "runtime-process-identity-unavailable" };
+            if (state.local === "mismatch") return { signaled: false, reason: "runtime-process-identity-mismatch" };
+            if (state.local === "exited") return { signaled: false, exited: true, reason: "runtime-process-exited" };
+            effects.push("signal"); state.onSignal(); if (state.signalExits) state.local = "exited"; return { signaled: true };
+        },
         waitExit: async () => state.local === "exited",
         budget(timeoutMs, intervalMs) {
             expect(timeoutMs).toBe(3000);
@@ -83,6 +88,41 @@ function fixture(recording: RecordingRecord = active, kind: AndroidRecordingPort
 }
 
 describe("direct Android recording settlement", () => {
+    it("uses identity-bound signal admission without a redundant observation and still proves host exit", async () => {
+        const f = fixture();
+        const observe = vi.fn(f.ports.observe), signal = f.ports.signal;
+        f.ports.observe = observe;
+        const admission = vi.fn((...args: Parameters<AndroidRecordingPorts["signal"]>) => {
+            expect(observe).not.toHaveBeenCalled();
+            return signal(...args);
+        });
+        f.ports.signal = admission;
+        expect(await f.stop()).toMatchObject({ kind: "success", value: { stopped: true } });
+        expect(admission).toHaveBeenCalledTimes(1);
+        expect(admission).toHaveBeenCalledWith(active, expect.any(Function));
+        expect(observe).toHaveBeenCalledTimes(1);
+        expect(observe).toHaveBeenCalledWith(identity, active.pid, admission.mock.calls[0][1]);
+        expect(f.effects.slice(0, 3)).toEqual(["signal", "fallback", "guest"]);
+    });
+
+    it.each([
+        ["missing identity", { signaled: false, reason: "runtime-process-identity-missing" }],
+        ["unavailable identity", { signaled: false, reason: "runtime-process-identity-unavailable" }],
+        ["bare negative", { signaled: false }],
+        ["unknown negative", { signaled: false, reason: "unqualified-refusal" }],
+    ] as const)("%s signal admission preserves recovery bytes without further native effects", async (_name, receipt) => {
+        const f = fixture();
+        const observe = vi.fn(() => ({ status: "exited" as const }));
+        f.ports.observe = observe;
+        const admission = vi.fn(() => receipt);
+        f.ports.signal = admission;
+        expect(await f.stop()).toMatchObject({ kind: "failure" });
+        f.retained();
+        expect(admission).toHaveBeenCalledTimes(1);
+        expect(observe).not.toHaveBeenCalled();
+        expect(f.effects).toEqual([]);
+    });
+
     it("regression: unavailable local identity and failed fallback cannot publish success or remove recovery bytes", async () => {
         const f = fixture();
         f.state.local = "unavailable";
@@ -238,12 +278,16 @@ describe("direct Android recording settlement", () => {
         expect(f.effects).not.toContain("fallback"); expect(f.effects).not.toContain("guest");
     });
 
-    it.each(["fallback", "guest"])("late positive %s evidence at expiry cannot create a stage or dispatch another command", async where => {
+    it.each(["signal", "fallback", "guest"])("late positive %s evidence at expiry cannot create a stage or dispatch another command", async where => {
         const f = fixture();
-        if (where === "fallback") f.state.onFallback = () => { f.state.now = 3000; return undefined; };
+        const observe = vi.fn(f.ports.observe);
+        f.ports.observe = observe;
+        if (where === "signal") f.state.onSignal = () => { f.state.now = 3000; return undefined; };
+        else if (where === "fallback") f.state.onFallback = () => { f.state.now = 3000; return undefined; };
         else f.state.onGuest = () => { f.state.now = 3000; return undefined; };
         expect(await f.stop()).toMatchObject({ kind: "failure" }); f.retained();
         expect(f.effects).not.toContain("stage");
+        if (where === "signal") { expect(f.effects).toEqual(["signal"]); expect(observe).not.toHaveBeenCalled(); }
         if (where === "fallback") expect(f.effects).not.toContain("guest");
         expect(f.timeouts.every(timeout => timeout > 0 && timeout <= 3000)).toBe(true);
     });

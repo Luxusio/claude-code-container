@@ -77,20 +77,17 @@ export function createDirectRecordingApplication(ports) {
         let hostSettled = !previous.active, stopGuest = false;
         if (previous.active) {
             if (!recordingIdentityAvailable(previous.processIdentity, previous.pid)) return unconfirmed();
-            const observed = effects.observe(previous.processIdentity, previous.pid, remainingMs);
+            // The native signal operation revalidates the exact saved identity
+            // immediately before signalling. A preliminary read would spend the
+            // same settlement allowance without granting any additional authority.
+            const signal = effects.signal(previous, remainingMs);
             refused = admitted();
             if (refused) return refused;
-            if (observed.status === 'unavailable') return unconfirmed();
-            hostSettled = observed.status === 'exited' || observed.status === 'mismatch';
-            stopGuest = observed.status !== 'mismatch';
-            if (observed.status === 'match') {
-                const signal = effects.signal(previous, remainingMs);
-                refused = admitted();
-                if (refused) return refused;
-                if (signal.reason === 'runtime-process-identity-missing' || signal.reason === 'runtime-process-identity-unavailable') return unconfirmed();
-                if (signal.reason === 'runtime-process-identity-mismatch') { hostSettled = true; stopGuest = false; }
-                else hostSettled = signal.exited === true;
-            }
+            if (signal.reason === 'runtime-process-identity-missing' || signal.reason === 'runtime-process-identity-unavailable') return unconfirmed();
+            if (!signal.signaled && signal.exited !== true && signal.reason !== 'runtime-process-identity-mismatch'
+                && signal.reason !== 'runtime-process-signal-failed') return unconfirmed();
+            hostSettled = signal.reason === 'runtime-process-identity-mismatch' || signal.exited === true;
+            stopGuest = signal.reason !== 'runtime-process-identity-mismatch';
         }
         if (stopGuest) {
             refused = admitted();

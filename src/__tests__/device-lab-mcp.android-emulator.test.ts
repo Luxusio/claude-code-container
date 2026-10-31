@@ -1578,7 +1578,7 @@ if (args[0] === '-s' && args[1] === 'emulator-5674' && args[2] === 'emu') {
             name: "start",
             arguments: { deviceId, waitForBoot: false },
         });
-        expect(start.isError).not.toBe(true);
+        expect(start.isError, JSON.stringify(start.content)).not.toBe(true);
 
         const state = JSON.parse(readFileSync(statePath, "utf8")) as { devices: Array<Record<string, any>> };
         const corrupted = state.devices.find((device) => device.id === deviceId);

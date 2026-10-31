@@ -6,7 +6,7 @@ import { runInstalledMcpSmoke } from "./installed-mcp-smoke.ts";
 
 export const name = "level 0 package smoke";
 
-export async function run() {
+export async function run(options: { homeDir?: string; env?: Record<string, string> } = {}) {
     assert.strictEqual(existsSync(join(repoRoot, "dist", "index.js")), true);
     assert.strictEqual(existsSync(join(repoRoot, "dist", "device-lab-mcp", "server.mjs")), true);
     assert.strictEqual(existsSync(join(repoRoot, "dist", "packages", "device-lab", "powershell", "Ccc.HyperV.Core.psm1")), true);
@@ -49,6 +49,8 @@ export async function run() {
     const installedMcpSmoke = await runInstalledMcpSmoke({
         name: "ccc-level0-installed-device-lab-mcp-smoke",
         serverPath: join(repoRoot, "dist", "device-lab-mcp", "server.mjs"),
+        homeDir: options.homeDir,
+        env: options.env,
     });
     assert.strictEqual(installedMcpSmoke.status, "PASS");
     assert.strictEqual(installedMcpSmoke.publicDispatchTools, installedMcpSmoke.tools);

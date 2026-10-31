@@ -25,7 +25,7 @@ async function fixture() {
         writeFileSync(preload, `const fs=require('fs'),cp=require('child_process');
 const record=(kind,args)=>fs.appendFileSync(${JSON.stringify(trace)},JSON.stringify({kind,args})+'\\n');
 // State locks observe only their own process identity through fixed native tools.
-const ownIdentityScript = "$P = Get-CimInstance Win32_Process -Filter 'ProcessId = " + process.pid + "' -ErrorAction SilentlyContinue; $H = Get-Process -Id " + process.pid + " -ErrorAction SilentlyContinue; if ($P -and $H) { [pscustomobject]@{ startToken = $H.StartTime.ToUniversalTime().ToString('o'); commandLine = [string]$P.CommandLine } | ConvertTo-Json -Compress }";
+const ownIdentityScript = "[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false); $P = Get-CimInstance Win32_Process -Filter 'ProcessId = " + process.pid + "' -ErrorAction SilentlyContinue; $H = Get-Process -Id " + process.pid + " -ErrorAction SilentlyContinue; if ($P -and $H) { [pscustomobject]@{ startToken = $H.StartTime.ToUniversalTime().ToString('o'); commandLine = [string]$P.CommandLine } | ConvertTo-Json -Compress }";
 const ownIdentityArgs = ['-WindowStyle','Hidden','-NoProfile','-NonInteractive','-Command',ownIdentityScript];
 for(const key of ['spawn','spawnSync','exec','execSync','execFile','execFileSync']){const original=cp[key];cp[key]=function(...args){
 const windowsIdentity = process.platform === 'win32' && ['execFile','spawn'].includes(key)

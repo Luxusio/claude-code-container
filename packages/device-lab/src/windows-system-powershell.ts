@@ -133,15 +133,28 @@ export function canonicalWindowsTasklistPath(testSystemRoot?: string): string | 
     return canonicalWindowsSystemExecutablePath("tasklist.exe", testSystemRoot);
 }
 
-export function windowsHandleBoundTerminationScript(): string {
+export function windowsHandleBoundTerminationScript(verifyCommandHash = false): string {
     return [
         "$ErrorActionPreference = 'Stop'",
         "$RootPid = [int]$env:CCC_WINDOWS_TERMINATE_PID",
-        "$Root = [Diagnostics.Process]::GetProcessById($RootPid)",
+        ...(verifyCommandHash ? [
+            "try { $Root = [Diagnostics.Process]::GetProcessById($RootPid); $PinnedRootHandle = $Root.Handle } catch { exit 5 }",
+        ] : ["$Root = [Diagnostics.Process]::GetProcessById($RootPid)"]),
         `$StartToken = 'windows:' + ${windowsStartTokenExpression("$Root")}`,
         "if ($StartToken -ne $env:CCC_WINDOWS_TERMINATE_START_TOKEN) { exit 3 }",
         "$Rows = @()",
-        "try { $Rows = @(Get-CimInstance Win32_Process -ErrorAction Stop | Select-Object ProcessId, ParentProcessId, CreationDate) } catch { $Rows = @() }",
+        ...(verifyCommandHash ? [
+            "if ($env:CCC_WINDOWS_TERMINATE_COMMAND_HASH -cnotmatch '^[a-f0-9]{64}$') { exit 5 }",
+            "try { $Rows = @(Get-CimInstance Win32_Process -ErrorAction Stop | Select-Object ProcessId, ParentProcessId, CreationDate, CommandLine) } catch { exit 5 }",
+            "$RootRows = @($Rows | Where-Object { [int]$_.ProcessId -eq $RootPid })",
+            "if ($RootRows.Count -ne 1 -or -not $RootRows[0].CreationDate -or [string]::IsNullOrEmpty([string]$RootRows[0].CommandLine)) { exit 5 }",
+            "$RootTicks = $Root.StartTime.ToUniversalTime().Ticks",
+            "if (($RootTicks - ($RootTicks % 10)) -ne $RootRows[0].CreationDate.ToUniversalTime().Ticks) { exit 3 }",
+            "$Hasher = [Security.Cryptography.SHA256]::Create()",
+            "try { $CommandHash = [BitConverter]::ToString($Hasher.ComputeHash([Text.Encoding]::UTF8.GetBytes([string]$RootRows[0].CommandLine))).Replace('-', '').ToLowerInvariant() } finally { $Hasher.Dispose() }",
+            "if ($CommandHash -cne $env:CCC_WINDOWS_TERMINATE_COMMAND_HASH) { exit 3 }",
+            "if ($Root.HasExited) { exit 5 }",
+        ] : ["try { $Rows = @(Get-CimInstance Win32_Process -ErrorAction Stop | Select-Object ProcessId, ParentProcessId, CreationDate) } catch { $Rows = @() }"]),
         "$Pending = [Collections.Generic.Queue[int]]::new()",
         "$Pending.Enqueue($RootPid)",
         "$DescendantRows = [Collections.Generic.List[object]]::new()",

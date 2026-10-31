@@ -128,7 +128,7 @@ function windowsProcessIdentity(pid: number, remainingMs?: () => number): Device
 }
 
 function windowsProcessIdentityScript(pid: number): string {
-    return `$P = Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}' -ErrorAction SilentlyContinue; $H = Get-Process -Id ${pid} -ErrorAction SilentlyContinue; if ($P -and $H) { [pscustomobject]@{ startToken = ${windowsStartTokenExpression("$H")}; commandLine = [string]$P.CommandLine } | ConvertTo-Json -Compress }`;
+    return `[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false); $P = Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}' -ErrorAction SilentlyContinue; $H = Get-Process -Id ${pid} -ErrorAction SilentlyContinue; if ($P -and $H) { [pscustomobject]@{ startToken = ${windowsStartTokenExpression("$H")}; commandLine = [string]$P.CommandLine } | ConvertTo-Json -Compress }`;
 }
 
 export const windowsProcessIdentityScriptForTest = windowsProcessIdentityScript;

@@ -173,7 +173,7 @@ function rpc(base,owner,token,params){return new Promise((resolve,reject)=>{cons
   if(!executableMetadata.isFile()||executableMetadata.isSymbolicLink()||raw.realpathSync.native(executable)!==raw.realpathSync.native(systemExecutable))throw Error('unadmitted self-identity executable');
   const pid=process.pid;
   const scripts=[
-   "$P = Get-CimInstance Win32_Process -Filter 'ProcessId = "+pid+"' -ErrorAction SilentlyContinue; $H = Get-Process -Id "+pid+" -ErrorAction SilentlyContinue; if ($P -and $H) { [pscustomobject]@{ startToken = $H.StartTime.ToUniversalTime().ToString('o'); commandLine = [string]$P.CommandLine } | ConvertTo-Json -Compress }",
+   "[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false); $P = Get-CimInstance Win32_Process -Filter 'ProcessId = "+pid+"' -ErrorAction SilentlyContinue; $H = Get-Process -Id "+pid+" -ErrorAction SilentlyContinue; if ($P -and $H) { [pscustomobject]@{ startToken = $H.StartTime.ToUniversalTime().ToString('o'); commandLine = [string]$P.CommandLine } | ConvertTo-Json -Compress }",
    "$P = Get-Process -Id "+pid+" -ErrorAction SilentlyContinue; if ($P) { [Console]::Out.Write($P.StartTime.ToUniversalTime().ToString('o')) }",
   ];
   if(processIdentity.windowsProcessIdentityScriptForTest(pid)!==scripts[0]||system.windowsStartTokenExpression('$P')!=="$P.StartTime.ToUniversalTime().ToString('o')")throw Error('unadmitted self-identity script');

@@ -2426,8 +2426,9 @@ describe("docker.ts module exports", () => {
 
         function mockReplacementRuntime(
             contractJson: string,
-            options: { identityRunning?: boolean, startTransitionsToRunning?: boolean } = {},
+            options: { identityRunning?: boolean, startTransitionsToRunning?: boolean, containerId?: string } = {},
         ): void {
+            const containerId = options.containerId ?? TEST_CONTAINER_SHORT_ID;
             let identityRunning = options.identityRunning ?? true;
             let removed = false;
             let created = false;
@@ -2441,25 +2442,25 @@ describe("docker.ts module exports", () => {
                     }
                     return removed
                         ? makeResult(1)
-                        : makeResult(0, `abc123|${identityRunning ? "true" : "false"}\n`);
+                        : makeResult(0, `${containerId}|${identityRunning ? "true" : "false"}\n`);
                 }
                 if (args[0] === "inspect") return makeResult(0, options.startTransitionsToRunning
                     ? JSON.stringify({ ...JSON.parse(contractJson), State: { Running: identityRunning } })
                     : contractJson);
-                if (args[0] === "ps" && args[1] === "-aq") return makeResult(0, removed ? "" : "abc123\n");
+                if (args[0] === "ps" && args[1] === "-aq") return makeResult(0, removed ? "" : `${containerId}\n`);
                 if (args[0] === "ps" && args[1] === "-q") {
-                    return makeResult(0, !removed && identityRunning ? "abc123\n" : "");
+                    return makeResult(0, !removed && identityRunning ? `${containerId}\n` : "");
                 }
                 if (args[0] === "start" && options.startTransitionsToRunning) {
                     identityRunning = true;
-                    return makeResult(0, "abc123\n");
+                    return makeResult(0, `${containerId}\n`);
                 }
                 if (args[0] === "stop") {
-                    return makeResult(0, "abc123\n");
+                    return makeResult(0, `${containerId}\n`);
                 }
                 if (args[0] === "rm") {
                     removed = true;
-                    return makeResult(0, "abc123\n");
+                    return makeResult(0, `${containerId}\n`);
                 }
                 if (args[0] === "run") { created = true; return makeResult(0, "c0ffee123456\n"); }
                 return makeResult(0);
@@ -5247,16 +5248,66 @@ describe("docker.ts module exports", () => {
             expect(spawnSyncMock.mock.calls.some((call: unknown[]) => (call[1] as string[])?.[0] === "rm")).toBe(true);
         });
 
-        it.each([true, false])("preserves unsafe running mounts even when the guard approves (initial snapshot=%s)", initiallyRunning => {
+        it("preserves unsafe running mounts without a verified startup snapshot even when the guard approves", () => {
             makeMountedBindProofDisagree();
             mockReplacementRuntime(makeCredentialSourceDriftContract());
             const guard = vi.fn((replace: () => void) => { replace(); return true; });
+            const beforeMutation = vi.fn(), ready = vi.fn(), recreated = vi.fn(), started = vi.fn();
             expect(() => startProjectContainer(projectPath, ensureDirs, undefined, undefined, undefined,
-                undefined, guard, undefined, initiallyRunning ? TEST_CONTAINER_ID : undefined))
+                recreated, guard, ready, undefined, started, mockRuntimeBindGuard, beforeMutation))
                 .toThrow(/contract failed safety validation/);
-            expect(guard).toHaveBeenCalledOnce();
+            expect(guard).toHaveBeenCalled();
+            expect(beforeMutation).not.toHaveBeenCalled();
             expectNoContainerReplacement();
             expect(mockPrepareCodexStateOwnership).not.toHaveBeenCalled();
+            expect(mockPrepareLabStateOwnership).not.toHaveBeenCalled();
+            expect(ready).not.toHaveBeenCalled();
+            expect(recreated).not.toHaveBeenCalled();
+            expect(started).not.toHaveBeenCalled();
+        });
+
+        it("preserves retained state when a guarded exact-ID stop does not establish a stopped container", () => {
+            makeMountedBindProofDisagree();
+            const contract = JSON.parse(makeCredentialSourceDriftContract());
+            contract.Id = TEST_CONTAINER_ID;
+            // Use the full native ID here rather than the unrelated legacy fixtures' short-ID translation.
+            expandShortContainerIds = false;
+            mockReplacementRuntime(JSON.stringify(contract), { containerId: TEST_CONTAINER_ID });
+            const effects: string[] = [];
+            const beforeMutation = vi.fn(() => { effects.push("intent"); });
+            const ready = vi.fn(), recreated = vi.fn(), started = vi.fn();
+            let stopReturned = false;
+            let runningObservationsAfterStop = 0;
+            const runtime = spawnSyncMock.getMockImplementation()!;
+            spawnSyncMock.mockImplementation((...args: unknown[]) => {
+                const argv = args[1] as string[];
+                if (argv[0] === "stop") { effects.push("stop"); stopReturned = true; }
+                const result = runtime(...args);
+                if (stopReturned && argv[0] === "inspect" && argv.includes("{{json .}}")) {
+                    expect(argv).toContain(TEST_CONTAINER_ID);
+                    expect(JSON.parse(result.stdout).State.Running).toBe(true);
+                    runningObservationsAfterStop += 1;
+                }
+                return result;
+            });
+            const guard = vi.fn((replace: () => void) => { replace(); return true; });
+
+            expect(() => startProjectContainer(projectPath, ensureDirs, undefined, undefined, undefined,
+                recreated, guard, ready, TEST_CONTAINER_ID, started, mockRuntimeBindGuard, beforeMutation))
+                .toThrow(/contract failed safety validation/);
+
+            expect(guard).toHaveBeenCalled();
+            expect(effects).toEqual(["intent", "stop"]);
+            expect(beforeMutation).toHaveBeenCalledOnce();
+            expect(spawnSyncMock.mock.calls.filter(([, args]) => (args as string[])[0] === "stop").map(([, args]) => args))
+                .toEqual([["stop", TEST_CONTAINER_ID]]);
+            expect(runningObservationsAfterStop).toBeGreaterThan(0);
+            expect(spawnSyncMock.mock.calls.some(([, args]) => ["rm", "run"].includes((args as string[])[0]))).toBe(false);
+            expect(mockPrepareCodexStateOwnership).not.toHaveBeenCalled();
+            expect(mockPrepareLabStateOwnership).not.toHaveBeenCalled();
+            expect(ready).not.toHaveBeenCalled();
+            expect(recreated).not.toHaveBeenCalled();
+            expect(started).not.toHaveBeenCalled();
         });
 
         it("preserves a running container with an obsolete host-stage credential mount", () => {
@@ -5341,6 +5392,7 @@ describe("docker.ts module exports", () => {
                 replace();
                 return true;
             });
+            const beforeMutation = vi.fn(), ready = vi.fn(), recreated = vi.fn(), started = vi.fn();
 
             expect(() => startProjectContainer(
                 projectPath,
@@ -5348,16 +5400,22 @@ describe("docker.ts module exports", () => {
                 undefined,
                 undefined,
                 undefined,
-                undefined,
+                recreated,
                 guard,
-                undefined,
+                ready,
                 TEST_CONTAINER_ID,
+                started,
+                mockRuntimeBindGuard,
+                beforeMutation,
             )).toThrow("container is not CCC-managed");
-            expect(guard).toHaveBeenCalledOnce();
-            expect(spawnSyncMock.mock.calls.some((call: unknown[]) => {
-                const args = call[1] as string[];
-                return args[0] === "stop" || args[0] === "rm" || args[0] === "run";
-            })).toBe(false);
+            expect(guard).toHaveBeenCalled();
+            expect(beforeMutation).not.toHaveBeenCalled();
+            expectNoContainerReplacement();
+            expect(mockPrepareCodexStateOwnership).not.toHaveBeenCalled();
+            expect(mockPrepareLabStateOwnership).not.toHaveBeenCalled();
+            expect(ready).not.toHaveBeenCalled();
+            expect(recreated).not.toHaveBeenCalled();
+            expect(started).not.toHaveBeenCalled();
         });
 
         it("does not remove a foreign same-name container that stops before recovery validation", () => {

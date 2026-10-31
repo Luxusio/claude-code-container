@@ -10978,23 +10978,42 @@ describe("pasteableArgument", () => {
     });
 
     it("hands every quoted argument to an available POSIX shell unchanged", (context) => {
-        const shell = ["sh", "bash"].find(candidate => {
-            const probe = spawnSync(candidate, ["-c", "printf ccc-posix-shell"], {
-                encoding: "utf-8", stdio: "pipe",
+        const candidates = process.platform === "win32"
+            ? [
+                { command: "sh.exe", args: ["-s"] },
+                { command: "wsl.exe", args: ["--exec", "/bin/sh", "-s"] },
+                { command: "bash.exe", args: ["-s"] },
+            ]
+            : [
+                { command: "sh", args: ["-s"] },
+                { command: "bash", args: ["-s"] },
+            ];
+        const attempts: string[] = [];
+        const shell = candidates.find(candidate => {
+            const probe = spawnSync(candidate.command, candidate.args, {
+                input: "printf '%s' ccc-posix-shell\n", encoding: "utf-8", stdio: "pipe",
             });
+            attempts.push(`${candidate.command} ${candidate.args.join(" ")}: ${probe.error?.message ?? `exit ${probe.status}: ${probe.stderr}`}`);
             return !probe.error && probe.status === 0 && probe.stdout === "ccc-posix-shell";
         });
         if (!shell) {
-            context.skip("POSIX argument execution requires sh or bash; portable quoting contracts run separately");
+            context.skip(`POSIX stdin execution requires sh, bash, or WSL; portable quoting contracts run separately. ${attempts.join("; ")}`);
             return;
         }
-        for (const [label, value] of cases) {
-            const ran = spawnSync(shell, ["-c", `printf '%s' ${pasteableArgument(value)}`], {
-                encoding: "utf-8", stdio: "pipe",
-            });
-            expect(ran.error, label).toBeUndefined();
-            expect(ran.status, ran.stderr).toBe(0);
-            expect(ran.stdout, label).toBe(value);
+        // Scripts travel through stdin: Windows launchers can reparse a quoted -c argument.
+        // One shell parses every case, with NUL framing preserving each result exactly.
+        const script = ["set -e", ...cases.map(([, value]) => `printf '%s\\0' ${pasteableArgument(value)}`)].join("\n") + "\n";
+        const invocation = `${shell.command} ${shell.args.join(" ")}`;
+        const ran = spawnSync(shell.command, shell.args, {
+            input: script, encoding: "utf-8", stdio: "pipe",
+        });
+        expect(ran.error, invocation).toBeUndefined();
+        expect(ran.status, `${invocation}\n${ran.stderr}`).toBe(0);
+        const observed = ran.stdout.split("\0");
+        expect(observed.pop(), `${invocation}: final NUL delimiter`).toBe("");
+        expect(observed, invocation).toHaveLength(cases.length);
+        for (const [index, [label, value]] of cases.entries()) {
+            expect(observed[index], `${invocation}: ${label}`).toBe(value);
         }
     });
 
