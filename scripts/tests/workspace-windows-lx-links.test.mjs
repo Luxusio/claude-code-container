@@ -131,6 +131,17 @@ function workspace(t, { otherPhysical = false, tag = "0xa000001d", platform = "w
         return symlink(target, path, originalPlatform.value === "win32" ? "junction" : "dir");
     });
     t.mock.method(cp, "spawnSync", (command, args, options) => {
+        if (/[/\\]WindowsPowerShell[/\\]v1\.0[/\\]powershell\.exe$/i.test(command)) {
+            // Build admission also observes its own process through the shared-lock
+            // SDK on native Windows. Keep that observation separate from LX repair.
+            assert.deepEqual(args.slice(0, -1), ["-WindowStyle", "Hidden", "-NoProfile", "-NonInteractive", "-Command"]);
+            assert.match(args.at(-1), new RegExp(`Get-CimInstance Win32_Process -Filter 'ProcessId = ${process.pid}'`));
+            assert.match(args.at(-1), new RegExp(`Get-Process -Id ${process.pid} -ErrorAction SilentlyContinue`));
+            assert.equal(options.windowsHide, true);
+            assert.equal(options.killSignal, "SIGKILL");
+            assert.ok(options.timeout > 0 && options.timeout <= 5_000);
+            return { status: 0, stdout: JSON.stringify({ startToken: "2026-10-31T00:00:00.0000000Z", commandLine: "node workspace LX fixture" }) };
+        }
         if (/fsutil\.exe$/i.test(command)) {
             assert.equal(options.shell, false); assert.equal(options.windowsHide, true);
             assert.equal(options.timeout, 15_000);

@@ -3,6 +3,7 @@ dist/
 coverage/
 proof/
 results/
+/.ccc-workspace-build.guard*
 .DS_Store
 
 .claude/settings.local.json

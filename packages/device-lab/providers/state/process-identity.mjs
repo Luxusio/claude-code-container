@@ -1,7 +1,6 @@
 import { execFile, spawnSync } from "child_process";
 import { createHash } from "crypto";
 import { readFileSync } from "fs";
-import { waitForExpectedRuntimeExitAsync } from "@ccc/device-lab/device-lab/adapters/process/runtime-exit.js";
 import { canonicalWindowsPowerShellPath, canonicalWindowsSystemExecutablePath, hiddenWindowsPowerShellArgs } from "./windows-system-powershell.mjs";
 
 function captureRemainingMs(durationMs, options = {}) {
@@ -353,15 +352,19 @@ async function reconcileFailedSignalExit(runtime, timeoutMs, options) {
     const duration = Math.floor(initialRemaining);
     if (duration < 1) return false;
     // Injected identity/liveness effects do not establish native proof for their PID.
-    const observeExit = options.waitForExit || (options.readIdentity || options.probeLiveness ? null : (expected, allowance) => {
+    const observeExit = options.waitForExit || (options.readIdentity || options.probeLiveness ? null : async (expected, allowance) => {
+        const { waitForExpectedRuntimeExitAsync } = await import("@ccc/device-lab/device-lab/adapters/process/runtime-exit.js");
+        const remainingAfterLoad = remainingMs();
+        const nativeAllowance = Math.min(allowance, Math.floor(remainingAfterLoad));
+        if (nativeAllowance < 1) return "unavailable";
         let first = true;
-        return waitForExpectedRuntimeExitAsync(expected, allowance, {
+        return waitForExpectedRuntimeExitAsync(expected, nativeAllowance, {
             // The observer's deadline follows the already captured phase/parent
             // remainder, including any parent shrink while native I/O is pending.
             now: () => {
                 const remaining = remainingMs();
                 if (first) { first = false; return 0; }
-                return Math.max(0, initialRemaining - remaining);
+                return Math.max(0, remainingAfterLoad - remaining);
             },
             ...(options.sleep ? { sleep: options.sleep } : {}),
         });

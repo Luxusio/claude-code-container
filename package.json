@@ -36,7 +36,7 @@
     "packages/device-lab/providers/state/windows-system-powershell.mjs"
   ],
   "scripts": {
-    "build": "npm run build:packages && npm run assemble:packages && npm run test:hyper-v:static && tsc && npm run typecheck:hyper-v:windows:contracts && npm run typecheck:real-tests && npm run typecheck:tests && npm run typecheck:architecture && npm run bundle:hyper-v:windows:library-test && npm run bundle:hyper-v:windows:library-privileged-test && npm run bundle:hyper-v:windows:network-host-test && node -e \"const fs=require('fs');const v=require('./package.json').version;const f='dist/utils.js';fs.writeFileSync(f,fs.readFileSync(f,'utf8').replace('__CLI_VERSION__',v))\" && npm run build:device-lab-mcp && npm run bundle:codex-resume-runtime && npm run assemble:packages",
+    "build": "node scripts/workspace-build.mjs all",
     "bundle:codex-resume-runtime": "node node_modules/esbuild-wasm/bin/esbuild src/codex-resume-recovery-entry.ts --bundle --platform=node --format=cjs --target=node20 --outfile=dist/codex-resume-runtime.cjs",
     "build:hyper-v:windows:library": "npm run build --workspace @ccc/hyper-v && npm run bundle:hyper-v:windows:library-test && npm run bundle:hyper-v:windows:library-privileged-test && npm run bundle:hyper-v:windows:network-host-test",
     "bundle:hyper-v:windows:library-test": "node node_modules/esbuild-wasm/bin/esbuild scripts/real-tests/hyper-v-windows-library.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/real-tests/hyper-v-windows-library.mjs",

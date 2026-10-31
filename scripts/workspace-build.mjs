@@ -7,12 +7,36 @@ import { isWindowsLxWorkspaceLink, removeWindowsLxWorkspaceLink } from "./window
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const runtimePackages = ["hyper-v", "device-lab"];
+const sourceLockModule = new URL("../packages/device-lab/providers/state/shared-mutation-lock.mjs", import.meta.url);
+const embeddedLockModule = new URL("../dist/packages/device-lab/providers/state/shared-mutation-lock.mjs", import.meta.url);
+const { withSharedMutationLock } = await import(
+    entryStat(fileURLToPath(sourceLockModule)) ? sourceLockModule.href : embeddedLockModule.href,
+);
 
 function entryStat(path) {
     try { return lstatSync(path); }
     catch (error) {
         if (error.code === "ENOENT") return null;
         throw error;
+    }
+}
+
+function withWorkspaceBuildLock(projectRoot, operation) {
+    return withSharedMutationLock(join(realpathSync(projectRoot), ".ccc-workspace-build.guard"), operation, {
+        waitMs: 300_000,
+        reclaimStale: true,
+    });
+}
+
+function runNode(projectRoot, args, stage) {
+    const result = spawnSync(process.execPath, args, {
+        cwd: projectRoot, stdio: "inherit", windowsHide: true,
+    });
+    if (result.error) throw result.error;
+    if (result.status !== 0) {
+        throw Object.assign(new Error(`workspace-build-failed: ${stage}`), {
+            exitCode: Number.isInteger(result.status) && result.status > 0 ? result.status : 1,
+        });
     }
 }
 
@@ -69,14 +93,15 @@ function prepareRuntimeWorkspaceLinks(projectRoot) {
 }
 
 export function buildWorkspacePackages(projectRoot = root) {
+    return withWorkspaceBuildLock(projectRoot, () => buildWorkspacePackagesInside(projectRoot));
+}
+
+function buildWorkspacePackagesInside(projectRoot) {
     prepareRuntimeWorkspaceLinks(projectRoot);
     for (const name of runtimePackages) {
         rmSync(join(projectRoot, "packages", name, "dist"), { recursive: true, force: true });
-        const result = spawnSync(process.execPath, [join(projectRoot, "node_modules/typescript/bin/tsc"),
-            "-p", join(projectRoot, "packages", name, "tsconfig.json")], {
-            cwd: projectRoot, stdio: "inherit", windowsHide: true,
-        });
-        if (result.error || result.status !== 0) throw new Error(`workspace-build-failed: ${name}`);
+        runNode(projectRoot, [join(projectRoot, "node_modules/typescript/bin/tsc"),
+            "-p", join(projectRoot, "packages", name, "tsconfig.json")], name);
     }
 }
 
@@ -122,6 +147,10 @@ function filesUnder(directory) {
 }
 
 export function assembleWorkspaceRuntime(projectRoot = root) {
+    return withWorkspaceBuildLock(projectRoot, () => assembleWorkspaceRuntimeInside(projectRoot));
+}
+
+function assembleWorkspaceRuntimeInside(projectRoot) {
     const dist = join(projectRoot, "dist");
     // The current display is served by Device Lab. Remove only the obsolete
     // standalone bundle, including outputs left by an incremental checkout.
@@ -187,9 +216,39 @@ export function assembleWorkspaceRuntime(projectRoot = root) {
     }
 }
 
+function buildAll(projectRoot = root) {
+    const npmCli = process.env.npm_execpath;
+    if (!npmCli) throw new Error("Run the complete build through npm run build.");
+    return withWorkspaceBuildLock(projectRoot, () => {
+        const npm = (script) => runNode(projectRoot, [npmCli, "run", script], script);
+        buildWorkspacePackagesInside(projectRoot);
+        assembleWorkspaceRuntimeInside(projectRoot);
+        npm("test:hyper-v:static");
+        runNode(projectRoot, [join(projectRoot, "node_modules/typescript/bin/tsc")], "CLI TypeScript");
+        for (const script of [
+            "typecheck:hyper-v:windows:contracts", "typecheck:real-tests", "typecheck:tests", "typecheck:architecture",
+            "bundle:hyper-v:windows:library-test", "bundle:hyper-v:windows:library-privileged-test",
+            "bundle:hyper-v:windows:network-host-test",
+        ]) npm(script);
+        const utils = join(projectRoot, "dist/utils.js");
+        const version = JSON.parse(readFileSync(join(projectRoot, "package.json"), "utf8")).version;
+        writeFileSync(utils, readFileSync(utils, "utf8").replace("__CLI_VERSION__", version));
+        npm("build:device-lab-mcp");
+        npm("bundle:codex-resume-runtime");
+        assembleWorkspaceRuntimeInside(projectRoot);
+    });
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
     const mode = process.argv[2];
-    if (mode === "build") buildWorkspacePackages();
-    else if (mode === "assemble") assembleWorkspaceRuntime();
-    else throw new Error("Usage: node scripts/workspace-build.mjs build|assemble");
+    try {
+        if (mode === "build") buildWorkspacePackages();
+        else if (mode === "assemble") assembleWorkspaceRuntime();
+        else if (mode === "all") buildAll();
+        else throw new Error("Usage: node scripts/workspace-build.mjs build|assemble|all");
+    } catch (error) {
+        if (!Number.isInteger(error?.exitCode) || error.exitCode < 1) throw error;
+        console.error(error.message);
+        process.exitCode = error.exitCode;
+    }
 }
