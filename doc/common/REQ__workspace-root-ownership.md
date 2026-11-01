@@ -76,6 +76,18 @@ execution and --resume accept that layout without checkout, reset, ref/index
 changes, or branch renaming. New workspaces and newly created missing child
 checkouts still use the requested branch.
 
+Nested discovery uses each checkout's current index and ignore rules. A nested
+Gitlink tracked by the workspace may therefore be absent from the source
+checkout's current inventory after a branch switch. Readiness may verify the
+concrete source repository at the same normalized relative path beneath the
+verified source root, without recursively discovering other repositories.
+That path and its ancestors must remain ordinary directories; source metadata,
+common Git directory, direct backpointer and registry must still agree. An
+absorbed submodule's storage remains bound to the source parent's Git modules
+directory, using the workspace index for its Gitlink and declaration. Missing,
+foreign, untracked or symlinked candidates do not gain ownership from this
+fallback, and readiness must not rewrite metadata or working files.
+
 Existing-workspace opening checks the topology and ownership of present
 repositories before nested creation or any content-repair prompt, so a foreign
 nested repository and its unique Git history remain untouched. This preflight

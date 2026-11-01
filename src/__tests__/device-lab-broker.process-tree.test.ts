@@ -83,16 +83,20 @@ async function generatedRunnerFixture(options: {
     cancel?: "before-request" | "after-grant" | "before-claim" | "during-spawn";
     spawnError?: boolean;
     identityCostMs?: number;
+    qualificationCostMs?: number;
     terminationCostMs?: number;
     missingIdentity?: boolean;
+    malformedIdentity?: boolean;
     changedIdentity?: boolean;
     holdInitialIdentity?: boolean;
+    initialIdentityError?: boolean;
 } = {}) {
     let now = 0;
     let identityReads = 0;
     const platform = options.platform || "win32";
     const nativeRequests: Array<{ args: string[]; timeout: number; env?: NodeJS.ProcessEnv }> = [];
     const signals: Array<{ pid: number; signal: string }> = [];
+    const terminatedPids: number[] = [];
     const spawns: unknown[] = [];
     const dispatchStates: number[] = [];
     const timers = new Map<object, { callback: () => void; at: number; delay: number }>();
@@ -117,7 +121,7 @@ async function generatedRunnerFixture(options: {
     const identity = () => {
         identityReads += 1;
         now += options.identityCostMs || 0;
-        return options.missingIdentity ? "" : JSON.stringify({
+        return options.missingIdentity ? "" : options.malformedIdentity ? "{invalid" : JSON.stringify({
             startToken: options.changedIdentity && identityReads > 1 ? "reused-token" : "2026-10-02T02:11:08.7160248Z",
             commandLine: "node provider.js",
         });
@@ -165,9 +169,9 @@ async function generatedRunnerFixture(options: {
                     if (options.spawnError) throw new Error("native-spawn-threw");
                     return child;
                 },
-                execFile: (_file: string, args: string[], nativeOptions: { timeout: number }, callback: (error: null, stdout: string, stderr: string) => void) => {
+                execFile: (_file: string, args: string[], nativeOptions: { timeout: number }, callback: (error: Error | null, stdout: string, stderr: string) => void) => {
                     nativeRequests.push({ args, ...nativeOptions });
-                    const complete = () => callback(null, identity(), "");
+                    const complete = () => callback(options.initialIdentityError ? new Error("initial-identity-rejected") : null, identity(), "");
                     if (options.holdInitialIdentity) releaseInitialIdentity = complete;
                     else complete();
                     return new EventEmitter();
@@ -175,6 +179,18 @@ async function generatedRunnerFixture(options: {
                 spawnSync: (_file: string, args: string[], nativeOptions: { timeout: number; env?: NodeJS.ProcessEnv }) => {
                     nativeRequests.push({ args, ...nativeOptions });
                     if (nativeOptions.env?.CCC_WINDOWS_TERMINATE_PID) {
+                        const started = now;
+                        now += options.qualificationCostMs || 0;
+                        // Qualification now happens inside this one native helper,
+                        // before any descendant or root termination is permitted.
+                        if (now - started >= nativeOptions.timeout) return { status: 5, stdout: "", stderr: "" };
+                        if (nativeOptions.env.CCC_WINDOWS_TERMINATE_PID !== String(child.pid)
+                            || nativeOptions.env.CCC_WINDOWS_TERMINATE_START_TOKEN !== (options.changedIdentity
+                                ? "windows:reused-token" : "windows:2026-10-02T02:11:08.7160248Z")
+                            || nativeOptions.env.CCC_WINDOWS_TERMINATE_COMMAND_HASH !== createHash("sha256").update("node provider.js").digest("hex")) {
+                            return { status: 3, stdout: "", stderr: "" };
+                        }
+                        terminatedPids.push(child.pid);
                         now += options.terminationCostMs || 0;
                         return { status: 0, stdout: "", stderr: "" };
                     }
@@ -209,7 +225,7 @@ async function generatedRunnerFixture(options: {
     runInNewContext(boundedProviderCommandRunnerScript(), context);
     await flush(); // Let an immediately completed native callback settle its Promise chain.
     return {
-        child, spawns, dispatchStates, nativeRequests, signals, timers, admission, parentPort, control,
+        child, spawns, dispatchStates, nativeRequests, signals, terminatedPids, timers, admission, parentPort, control,
         advance: (milliseconds: number) => { now += milliseconds; },
         releaseIdentity: async () => {
             if (!releaseInitialIdentity) throw new Error("fixture expected a held initial identity query");
@@ -600,6 +616,61 @@ describe("device broker timed-out process tree cleanup", () => {
         expect(fixture.timers.size).toBe(0);
     });
 
+    it.each([false, true])("uses a late initial Windows identity only to clean up its still-live child (primary rejection=%s)", async rejected => {
+        const fixture = await generatedRunnerFixture({admission: [100, 400], holdInitialIdentity: true});
+        expect(fixture.nativeRequests[0].timeout).toBe(400);
+        fixture.child.stdout.emit("data", Buffer.from("before"));
+        if (rejected) fixture.child.emit("error", new Error("native-primary-before-identity"));
+        const firstFailure = fixture.failureBytes();
+        fixture.advance(150);
+        fixture.runNextTimer();
+        fixture.child.stdout.emit("data", Buffer.from("PRIVATE-LATE-OUTPUT"));
+        expect(fixture.nativeRequests).toHaveLength(1);
+        await fixture.releaseIdentity();
+        expect(fixture.publishedIdentity()).toMatchObject({pid: 7001, startToken: "windows:2026-10-02T02:11:08.7160248Z"});
+        expect(fixture.admission?.[0]).toBe(5);
+        const termination = fixture.nativeRequests[1];
+        expect(termination.args).toEqual(["-WindowStyle", "Hidden", "-NoProfile", "-NonInteractive", "-Command", windowsProcesses.windowsHandleBoundTerminationScript(true)]);
+        expect(termination.timeout).toBe(250);
+        expect(termination.env).toMatchObject({CCC_WINDOWS_TERMINATE_PID: "7001", CCC_WINDOWS_TERMINATE_TIMEOUT_MS: "250",
+            CCC_WINDOWS_TERMINATE_START_TOKEN: "windows:2026-10-02T02:11:08.7160248Z",
+            CCC_WINDOWS_TERMINATE_COMMAND_HASH: createHash("sha256").update("node provider.js").digest("hex")});
+        expect(fixture.terminatedPids).toEqual([7001]);
+        expect(fixture.child.stdin.end).not.toHaveBeenCalled();
+        fixture.runNextTimer();
+        const result = fixture.result();
+        expect(result).toMatchObject({status: null, stdout: "before", timedOut: !rejected, outputLimitExceeded: false,
+            error: expect.stringContaining(rejected ? "native-primary-before-identity" : "timed out"),
+            cleanup: {pid: 7001, attempted: true, ok: true}});
+        if (rejected) expect(fixture.failureBytes()).toEqual(firstFailure);
+        fixture.close(0);
+        expect(fixture.result()).toEqual(result);
+        expect(fixture.nativeRequests).toHaveLength(2);
+        expect(fixture.signals).toEqual([]);
+        expect(fixture.child.kill).not.toHaveBeenCalled();
+        expect(fixture.timers.size).toBe(0);
+    });
+
+    it.each(["exit-before-close", "completion-expired", "identity-error", "identity-missing", "identity-malformed"] as const)("refuses a late initial identity after %s", async refusal => {
+        const fixture = await generatedRunnerFixture({admission: [100, 400], holdInitialIdentity: true,
+            initialIdentityError: refusal === "identity-error", missingIdentity: refusal === "identity-missing",
+            malformedIdentity: refusal === "identity-malformed"});
+        if (refusal === "exit-before-close") fixture.exit(7);
+        fixture.advance(refusal === "completion-expired" ? 401 : 150);
+        fixture.runNextTimer();
+        await fixture.releaseIdentity();
+        expect(fixture.publishedIdentity()).toBeUndefined();
+        expect(fixture.nativeRequests).toHaveLength(1);
+        expect(fixture.terminatedPids).toEqual([]);
+        expect(fixture.child.stdin.end).not.toHaveBeenCalled();
+        for (let index = 0; index < 3 && !fixture.result(); index += 1) fixture.runNextTimer();
+        expect(fixture.result()).toMatchObject({status: refusal === "exit-before-close" ? 7 : null,
+            timedOut: refusal !== "exit-before-close", cleanup: {attempted: false, ok: false, error: "spawned-process-identity-missing"}});
+        expect(fixture.signals).toEqual([]);
+        expect(fixture.child.kill).not.toHaveBeenCalled();
+        expect(fixture.timers.size).toBe(0);
+    });
+
     it.each(["deadline", "native rejection", "overflow"] as const)("retains timely Windows identity for one qualified cleanup after %s", async failure => {
         const fixture = await generatedRunnerFixture({admission: [100, 400], holdInitialIdentity: true});
         fixture.advance(20);
@@ -630,16 +701,17 @@ describe("device broker timed-out process tree cleanup", () => {
     });
 
     it.each([0, 10])("shares admitted command and completion durations across transport, identity, termination and grace (transport %sms)", async grantDelayMs => {
-        const fixture = await generatedRunnerFixture({ admission: [40, 100], grantDelayMs, identityCostMs: 10, terminationCostMs: 25, cleanupGraceMs: 80 });
+        const fixture = await generatedRunnerFixture({ admission: [40, 100], grantDelayMs, identityCostMs: 10, qualificationCostMs: 10, terminationCostMs: 25, cleanupGraceMs: 80 });
         expect(fixture.spawns).toHaveLength(1);
-        expect(fixture.nativeRequests[0].timeout).toBe(40 - grantDelayMs);
+        expect(fixture.nativeRequests[0].timeout).toBe(100 - grantDelayMs);
         expect([...fixture.timers.values()].some(timer => timer.at === 40)).toBe(true);
         fixture.runNextTimer();
         expect(fixture.nativeRequests[1].timeout).toBe(60);
         const termination = fixture.nativeRequests.find(request => request.env?.CCC_WINDOWS_TERMINATE_PID);
-        expect(termination?.timeout).toBe(50);
-        expect(Number(termination?.env?.CCC_WINDOWS_TERMINATE_TIMEOUT_MS)).toBeGreaterThan(0);
-        expect(Number(termination?.env?.CCC_WINDOWS_TERMINATE_TIMEOUT_MS)).toBeLessThanOrEqual(50);
+        expect(termination?.timeout).toBe(60);
+        expect(Number(termination?.env?.CCC_WINDOWS_TERMINATE_TIMEOUT_MS)).toBe(60);
+        expect(fixture.nativeRequests).toHaveLength(2); // Initial capture plus one atomic qualified helper.
+        expect(fixture.terminatedPids).toEqual([7001]);
         expect([...fixture.timers.values()].some(timer => timer.delay === 25)).toBe(true);
         fixture.runNextTimer();
         expect(fixture.result()).toMatchObject({ status: null, timedOut: true, cleanup: { attempted: true, ok: true } });
@@ -702,13 +774,28 @@ describe("device broker timed-out process tree cleanup", () => {
         expect(fixture.result()?.status).toBeNull();
     });
 
-    it("does not grant cleanup authority to an identity observation that finishes after completion expiry", async () => {
-        const fixture = await generatedRunnerFixture({ admission: [40, 45], identityCostMs: 10 });
+    it("refuses effects when native helper qualification consumes the completion allowance", async () => {
+        const fixture = await generatedRunnerFixture({ admission: [40, 45], identityCostMs: 10, qualificationCostMs: 10 });
         for (let index = 0; index < 5 && !fixture.result(); index += 1) fixture.runNextTimer();
         expect(fixture.nativeRequests[1].timeout).toBe(5);
-        expect(fixture.nativeRequests.filter(request => request.env?.CCC_WINDOWS_TERMINATE_PID)).toEqual([]);
+        expect(fixture.nativeRequests.filter(request => request.env?.CCC_WINDOWS_TERMINATE_PID)).toHaveLength(1);
+        expect(fixture.terminatedPids).toEqual([]);
         expect(fixture.signals).toEqual([]);
-        expect(fixture.result()).toMatchObject({ status: null, cleanup: { attempted: false, ok: false } });
+        expect(fixture.result()).toMatchObject({ status: null, timedOut: true,
+            cleanup: { attempted: false, ok: false, error: "spawned-process-identity-unavailable" } });
+    });
+
+    it("does not accept a successful native helper result received after completion expiry", async () => {
+        const fixture = await generatedRunnerFixture({admission: [40, 100], terminationCostMs: 61});
+        fixture.runNextTimer();
+        expect(fixture.nativeRequests).toHaveLength(2);
+        expect(fixture.nativeRequests[1].timeout).toBe(60);
+        expect(fixture.terminatedPids).toEqual([7001]); // Native effects alone do not establish timely completion.
+        fixture.runNextTimer();
+        expect(fixture.result()).toMatchObject({status: null, timedOut: true,
+            cleanup: {attempted: true, ok: false, error: "process-termination-timeout"}});
+        expect(fixture.signals).toEqual([]);
+        expect(fixture.child.kill).not.toHaveBeenCalled();
     });
 
     it("refuses a late successful native close without losing observed output", async () => {
@@ -766,10 +853,12 @@ describe("device broker timed-out process tree cleanup", () => {
     it.each(["missing", "changed"])("refuses native termination for %s saved identity", async kind => {
         const fixture = await generatedRunnerFixture({ missingIdentity: kind === "missing", changedIdentity: kind === "changed" });
         fixture.runNextTimer();
-        expect(fixture.nativeRequests.filter(request => request.env?.CCC_WINDOWS_TERMINATE_PID)).toEqual([]);
+        expect(fixture.nativeRequests.filter(request => request.env?.CCC_WINDOWS_TERMINATE_PID)).toHaveLength(kind === "changed" ? 1 : 0);
+        expect(fixture.terminatedPids).toEqual([]);
         expect(fixture.signals).toEqual([]);
         for (let index = 0; index < 5 && !fixture.result(); index += 1) fixture.runNextTimer();
-        expect(fixture.result()).toMatchObject({ cleanup: { attempted: false, ok: false } });
+        expect(fixture.result()).toMatchObject({ cleanup: { attempted: false, ok: false,
+            error: kind === "changed" ? "spawned-process-identity-mismatch" : "spawned-process-identity-missing" } });
     });
 
     it.each([false, true])("accounts real Worker startup before %s asynchronous invocation", async asynchronous => {

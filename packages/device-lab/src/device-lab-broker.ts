@@ -8639,15 +8639,24 @@ function windowsProcessIdentityFromOutput(pid, output, remainingMs) {
 }
 
 function readInitialWindowsProcessIdentity(pid, complete) {
-    const timeout = Math.min(5000, commandRemainingMs());
-    if (!timeout || typeof payload.windowsPowerShellPath !== "string" || !payload.windowsPowerShellPath) {
+    const timeout = Math.min(5000, completionRemainingMs());
+    if (!commandRemainingMs() || !timeout || typeof payload.windowsPowerShellPath !== "string" || !payload.windowsPowerShellPath) {
         complete(null);
         return;
     }
     try {
         execFile(payload.windowsPowerShellPath, windowsProcessIdentityArgs(pid), {
             encoding: "utf8", timeout, killSignal: "SIGKILL", windowsHide: true, maxBuffer: 64 * 1024,
-        }, (error, output) => complete(error ? null : windowsProcessIdentityFromOutput(pid, output, commandRemainingMs)));
+        }, (error, output) => {
+            // C still bounds execution. The same observation may finish within
+            // K solely to clean up the original child whose handle is retained;
+            // Node publishes its exit fields before closing that native handle.
+            const cleanupOnly = child && child.pid === pid && child.exitCode === null
+                && child.signalCode === null && !pendingClose;
+            const identity = error || (!commandRemainingMs() && !cleanupOnly) ? null
+                : windowsProcessIdentityFromOutput(pid, output, completionRemainingMs);
+            complete(completionRemainingMs() ? identity : null);
+        });
     } catch {
         complete(null);
     }

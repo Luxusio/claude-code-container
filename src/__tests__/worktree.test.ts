@@ -17,6 +17,7 @@ import {
     realpathSync,
     linkSync,
     chmodSync,
+    readlinkSync,
 } from "fs";
 import { join, dirname, basename, posix, relative, resolve, delimiter } from "path";
 import { tmpdir } from "os";
@@ -3634,29 +3635,46 @@ describe("createWorkspace (unified mode)", () => {
         expect(existsSync(join(result.workspacePath, ".env"))).toBe(true);
     });
 
-    it("creates a clean chained workspace from an existing CCC worktree", () => {
-        initRepo(tmpDir);
-        initRepo(join(tmpDir, "nested"));
-        const first = createWorkspace(tmpDir, "first-workspace");
-        const second = createWorkspace(first.workspacePath, "second-workspace");
+    describe("chained workspace lifecycle", () => {
+        let first: ReturnType<typeof createWorkspace> | undefined;
+        let second: ReturnType<typeof createWorkspace> | undefined;
 
-        expect(isValidWorktree(second.workspacePath, tmpDir)).toBe(true);
-        expect(isValidWorktree(
-            join(second.workspacePath, "nested"),
-            join(tmpDir, "nested"),
-        )).toBe(true);
-        expect(detectWorktreeWorkspaceBranch(second.workspacePath))
-            .toBe("second-workspace");
+        beforeEach(() => {
+            first = undefined;
+            second = undefined;
+            initRepo(tmpDir);
+            initRepo(join(tmpDir, "nested"));
+            first = createWorkspace(tmpDir, "first-workspace");
+            expect(isValidWorktree(first.workspacePath, tmpDir)).toBe(true);
+            expect(isValidWorktree(join(first.workspacePath, "nested"), join(tmpDir, "nested"))).toBe(true);
+        });
 
-        const secondRemoval = removeWorkspace(
-            first.workspacePath,
-            "second-workspace",
-        );
-        expect(secondRemoval.errors).toEqual([]);
-        expect(existsSync(second.workspacePath)).toBe(false);
-        const firstRemoval = removeWorkspace(tmpDir, "first-workspace");
-        expect(firstRemoval.errors).toEqual([]);
-        expect(existsSync(first.workspacePath)).toBe(false);
+        afterEach(() => {
+            if (!first) return;
+            try {
+                // Also close the owned second workspace if an earlier assertion failed.
+                if (second && existsSync(second.workspacePath)) {
+                    const removed = removeWorkspace(first.workspacePath, "second-workspace");
+                    expect(removed.errors).toEqual([]);
+                    expect(existsSync(second.workspacePath)).toBe(false);
+                }
+            } finally {
+                const removed = removeWorkspace(tmpDir, "first-workspace");
+                expect(removed.errors).toEqual([]);
+                expect(existsSync(first.workspacePath)).toBe(false);
+            }
+        });
+
+        it("creates a clean chained workspace from an existing CCC worktree", () => {
+            second = createWorkspace(first!.workspacePath, "second-workspace");
+            expect(isValidWorktree(second.workspacePath, tmpDir)).toBe(true);
+            expect(isValidWorktree(join(second.workspacePath, "nested"), join(tmpDir, "nested"))).toBe(true);
+            expect(detectWorktreeWorkspaceBranch(second.workspacePath)).toBe("second-workspace");
+
+            const removed = removeWorkspace(first!.workspacePath, "second-workspace");
+            expect(removed.errors).toEqual([]);
+            expect(existsSync(second.workspacePath)).toBe(false);
+        });
     });
 
     it.skipIf(process.platform === "win32")(
@@ -8556,79 +8574,139 @@ describe("getWorktreeGitMounts", () => {
         }
     });
 
-    it("projects tracked submodules from the target worktree index when its checkout metadata is stale", () => {
-        const sourcePath = join(tmpDir, "source-inventory-root");
-        const origin = join(tmpDir, "source-inventory-origin");
-        initRepo(sourcePath);
-        initRepo(origin);
-        const baseBranch = spawnSync(
-            "git",
-            ["branch", "--show-current"],
-            { cwd: sourcePath, encoding: "utf-8", stdio: "pipe" },
-        ).stdout.trim();
-        expect(spawnSync(
-            "git",
-            ["switch", "-c", "source-inventory-with-submodule"],
-            { cwd: sourcePath, encoding: "utf-8", stdio: "pipe" },
-        ).status).toBe(0);
-        expect(spawnSync(
-            "git",
-            [
-                "-c",
-                "protocol.file.allow=always",
-                "submodule",
-                "add",
-                origin,
-                "services/catchy-api",
-            ],
-            { cwd: sourcePath, encoding: "utf-8", stdio: "pipe" },
-        ).status).toBe(0);
-        spawnSync("git", ["commit", "-am", "add submodule"], {
-            cwd: sourcePath,
-            stdio: "pipe",
+    describe("workspace Gitlinks absent from the source's current index", () => {
+        let sourcePath: string;
+        let sourceSubmodule: string;
+        let workspacePath: string;
+        let workspaceSubmodule: string;
+        const branch = "source-inventory";
+        const childPath = "services/catchy-api";
+
+        function git(cwd: string, args: string[]): string {
+            const result = spawnSync("git", args, { cwd, encoding: "utf-8", stdio: "pipe" });
+            expect(result.error).toBeUndefined();
+            expect(result.status, result.stderr).toBe(0);
+            return result.stdout;
+        }
+
+        function capture() {
+            return (readdirSync(tmpDir, { recursive: true }) as string[]).sort().flatMap(name => {
+                const path = join(tmpDir, name);
+                const stat = lstatSync(path);
+                return stat.isFile() || stat.isSymbolicLink()
+                    ? [{ name, ino: stat.ino, mode: stat.mode,
+                        contents: stat.isSymbolicLink() ? readlinkSync(path) : readFileSync(path) }]
+                    : [];
+            });
+        }
+
+        beforeEach(() => {
+            sourcePath = join(tmpDir, "source-inventory-root");
+            const origin = join(tmpDir, "source-inventory-origin");
+            initRepo(sourcePath);
+            initRepo(origin);
+            const baseBranch = git(sourcePath, ["branch", "--show-current"]).trim();
+            git(sourcePath, ["switch", "-c", "source-inventory-with-submodule"]);
+            git(sourcePath, ["-c", "protocol.file.allow=always", "submodule", "add", origin, childPath]);
+            git(sourcePath, ["commit", "-am", "add submodule"]);
+            workspacePath = createWorkspace(sourcePath, branch).workspacePath;
+            sourceSubmodule = join(sourcePath, "services", "catchy-api");
+            workspaceSubmodule = join(workspacePath, "services", "catchy-api");
+            git(sourcePath, ["switch", baseBranch]);
+            expect(git(sourcePath, ["ls-files", "--stage", "--", childPath])).toBe("");
+            expect(isValidWorktree(workspaceSubmodule, sourceSubmodule)).toBe(true);
+            writeFileSync(join(workspacePath, ".gitmodules"),
+                "[submodule \"stale\"]\n\tpath = services/stale\n\turl = ../stale\n");
+            writeFileSync(join(workspacePath, "init.txt"), "uncommitted root work\n");
+            writeFileSync(join(workspaceSubmodule, "init.txt"), "uncommitted child work\n");
+            writeFileSync(join(workspaceSubmodule, "untracked.txt"), "untracked child work\n");
+            writeFileSync(join(workspaceSubmodule, "staged.txt"), "staged child work\n");
+            git(workspaceSubmodule, ["add", "staged.txt"]);
         });
-        const result = createWorkspace(sourcePath, "source-inventory");
-        expect(spawnSync(
-            "git",
-            ["switch", baseBranch],
-            { cwd: sourcePath, encoding: "utf-8", stdio: "pipe" },
-        ).status).toBe(0);
-        writeFileSync(
-            join(result.workspacePath, ".gitmodules"),
-            "[submodule \"stale\"]\n\tpath = services/stale\n\turl = ../stale\n",
-        );
 
-        const mounts = getWorktreeGitMounts(
-            result.workspacePath,
-            true,
-            "/project/source-inventory-root--source-inventory",
-        );
-        const workspaceSubmoduleGit = posix.join(
-            "/project/source-inventory-root--source-inventory",
-            "services/catchy-api/.git",
-        );
-        const sourceSubmodule = join(sourcePath, "services", "catchy-api");
-        const commonGitDirectory = resolve(
-            sourceSubmodule,
-            spawnSync(
-                "git",
-                ["rev-parse", "--git-common-dir"],
-                {
-                    cwd: sourceSubmodule,
-                    encoding: "utf-8",
-                    stdio: "pipe",
-                },
-            ).stdout.trim(),
-        );
+        it("projects tracked submodules from the target worktree index when its checkout metadata is stale", () => {
+            const mounts = getWorktreeGitMounts(workspacePath, true,
+                "/project/source-inventory-root--source-inventory");
+            const workspaceSubmoduleGit = "/project/source-inventory-root--source-inventory/services/catchy-api/.git";
+            const commonGitDirectory = resolve(sourceSubmodule,
+                git(sourceSubmodule, ["rev-parse", "--git-common-dir"]).trim());
+            expect(mounts.some(({ hostPath }) => hostPath === commonGitDirectory)).toBe(true);
+            expect(mounts.some(({ hostPath, containerPath }) => (
+                hostPath.endsWith(".ccc-container-gitdir")
+                && readFileSync(hostPath, "utf-8") === `${workspaceSubmoduleGit}\n`
+                && containerPath.endsWith("/gitdir")
+            ))).toBe(true);
 
-        expect(mounts.some(({ hostPath }) => (
-            hostPath === commonGitDirectory
-        ))).toBe(true);
-        expect(mounts.some(({ hostPath, containerPath }) => (
-            hostPath.endsWith(".ccc-container-gitdir")
-            && readFileSync(hostPath, "utf-8") === `${workspaceSubmoduleGit}\n`
-            && containerPath.endsWith("/gitdir")
-        ))).toBe(true);
+            const before = capture();
+            expect(isWorktreeWorkspace(workspacePath)).toBe(true);
+            expect(detectWorktreeWorkspaceBranch(workspacePath)).toBe(branch);
+            expect(() => assertWorkspaceReady(workspacePath, spawnSync, sourcePath)).not.toThrow();
+            expect(() => assertWorkspaceReady(workspacePath)).not.toThrow();
+            const env = { ...process.env };
+            delete env.VITEST;
+            const cli = spawnSync(process.execPath, [
+                "--import", import.meta.resolve("tsx"), resolve("src/index.ts"), `@${branch}`, "profile", "list",
+            ], { cwd: sourcePath, input: "n\n", env, encoding: "utf-8", stdio: "pipe", timeout: 20_000 });
+            const output = `${cli.stdout ?? ""}${cli.stderr ?? ""}`;
+            expect(cli.status, output).toBe(0);
+            expect(output).not.toMatch(/unowned Git repository|not owned by its source|Stash content and recreate/);
+            expect(capture(), "readiness and CLI reopen preserve Git metadata, registrations, and working files").toEqual(before);
+        });
+
+        it.each([false, true])("refuses a same-path foreign registered child (forged source metadata=%s)", forged => {
+            git(sourceSubmodule, ["worktree", "remove", "--force", workspaceSubmodule]);
+            const foreign = join(tmpDir, "foreign-source");
+            initRepo(foreign);
+            git(foreign, ["worktree", "add", "-b", "foreign-child", workspaceSubmodule]);
+            writeFileSync(join(workspaceSubmodule, "untracked.txt"), "foreign work to preserve\n");
+            expect(isValidWorktree(workspaceSubmodule, foreign)).toBe(true);
+            if (forged) {
+                overwriteGitFixtureFile(join(sourceSubmodule, ".git"), `gitdir: ${join(foreign, ".git")}\n`);
+            }
+            const before = capture();
+            expect(() => isWorktreeWorkspace(workspacePath)).toThrow(/owned|source|metadata/);
+            expect(() => assertWorkspaceReady(workspacePath, spawnSync, sourcePath)).toThrow(/owned|source|metadata/);
+            expect(() => assertWorkspaceReady(workspacePath)).toThrow(/owned|source|metadata/);
+            expect(capture(), "foreign registration and history remain untouched").toEqual(before);
+        });
+
+        it.each(["absent", "symlink"] as const)("refuses %s same-relative source evidence", state => {
+            const heldSource = join(sourcePath, "services", "held-source");
+            renameSync(sourceSubmodule, heldSource);
+            if (state === "symlink") directorySymlink(heldSource, sourceSubmodule);
+            const before = capture();
+            expect(() => isWorktreeWorkspace(workspacePath)).toThrow(/owned|source|metadata|symlink/);
+            expect(() => assertWorkspaceReady(workspacePath, spawnSync, sourcePath)).toThrow(/owned|source|metadata|symlink/);
+            expect(() => assertWorkspaceReady(workspacePath)).toThrow(/owned|source|metadata|symlink/);
+            expect(capture()).toEqual(before);
+        });
+
+        it("does not use the fallback to admit an untracked child hidden only from source discovery", () => {
+            const sourceChild = join(sourcePath, "untracked-child");
+            const child = join(workspacePath, "untracked-child");
+            initRepo(sourceChild);
+            writeFileSync(join(sourcePath, ".gitignore"), "untracked-child/\n");
+            git(sourceChild, ["worktree", "add", "-b", "untracked-child", child]);
+            expect(isValidWorktree(child, sourceChild)).toBe(true);
+            expect(git(workspacePath, ["ls-files", "--stage", "--", "untracked-child"])).toBe("");
+            const before = capture();
+            expect(() => isWorktreeWorkspace(workspacePath)).toThrow(/owned|source|metadata/);
+            expect(() => assertWorkspaceReady(workspacePath, spawnSync, sourcePath)).toThrow(/owned|source|metadata/);
+            expect(() => assertWorkspaceReady(workspacePath)).toThrow(/owned|source|metadata/);
+            expect(capture()).toEqual(before);
+        });
+
+        it.skipIf(process.platform !== "win32")("admits alternate native Windows case spelling without rewriting metadata", context => {
+            const sourceAlias = join(dirname(sourcePath), basename(sourcePath).toUpperCase());
+            const workspaceAlias = join(dirname(workspacePath), basename(workspacePath).toUpperCase());
+            if (!existsSync(sourceAlias) || !existsSync(workspaceAlias)) context.skip();
+            expect(statSync(workspaceAlias).ino).toBe(statSync(workspacePath).ino);
+            const before = capture();
+            expect(isWorktreeWorkspace(workspaceAlias)).toBe(true);
+            expect(() => assertWorkspaceReady(workspaceAlias, spawnSync, sourceAlias)).not.toThrow();
+            expect(() => assertWorkspaceReady(workspaceAlias)).not.toThrow();
+            expect(capture()).toEqual(before);
+        });
     });
 
     it("projects source Gitlinks added after an ignored workspace was created", () => {

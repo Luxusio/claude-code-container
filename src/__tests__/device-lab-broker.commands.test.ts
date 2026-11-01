@@ -12143,6 +12143,21 @@ async function createAndroidHttpFixture(phase: AndroidHttpFixturePhase, helperOp
 // Isolate only the fake SDK's global inventory; PID/birth/command probes remain native.
 const androidHttpInventorySpawn = cp.spawn;
 const androidHttpNativeSpawnSync = cp.spawnSync;
+const androidHttpNativeExecFile = cp.execFile;
+cp.execFile = function(command, args = [], options = {}, callback) {
+    const script = args.at(-1);
+    const identityPid = ${JSON.stringify(phase === 'owner-cleanup')} && path.win32.basename(command).toLowerCase() === 'powershell.exe'
+        && typeof script === 'string' && script.match(/Get-CimInstance Win32_Process -Filter 'ProcessId = (\\d+)'/);
+    if (!identityPid || typeof callback !== 'function') return androidHttpNativeExecFile.apply(this, arguments);
+    const startedAt = performance.now();
+    return androidHttpNativeExecFile.call(this, command, args, options, function(error, stdout, stderr) {
+        fs.appendFileSync(path.join(process.env.HOME, 'cleanup-native.log'), JSON.stringify({
+            kind: 'initial-identity', pid: Number(identityPid[1]), timeoutMs: options.timeout,
+            elapsedMs: performance.now() - startedAt, status: error ? error.code : 0,
+        }) + '\\n');
+        return callback.call(this, error, stdout, stderr);
+    });
+};
 cp.spawnSync = function(command, args = [], options = {}) {
     const script = args.at(-1);
     if (path.win32.basename(command).toLowerCase() === 'powershell.exe' && typeof script === 'string') {
@@ -12390,7 +12405,9 @@ describe('emitted default-runner Android HTTP responsiveness', () => {
             const reply = await androidHttpFixtureBounded(cleanup.result, 6000, 'owner cleanup reset its captured Android execution allowance');
             expect(performance.now() - startedAt).toBeLessThan(7000);
             expect(existsSync(join(fixture.home, 'release-owner-cleanup'))).toBe(false);
-            expect(await nativeEndedAtReply, 'cleanup RPC must not return and release its device lock while its native stop can still resume: ' + JSON.stringify({reply, nativePid, nativeCalls: fixture.nativeCalls()})).toBe(true);
+            const nativeLog = join(fixture.home, 'cleanup-native.log');
+            const cleanupCalls = existsSync(nativeLog) ? readFileSync(nativeLog, 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line)) : [];
+            expect(await nativeEndedAtReply, 'cleanup RPC must not return and release its device lock while its native stop can still resume: ' + JSON.stringify({reply, nativePid, nativeCalls: fixture.nativeCalls(), cleanupCalls})).toBe(true);
             expect(existsSync(join(fixture.home, 'stop-requested'))).toBe(false);
             expect(existsSync(join(fixture.home, 'active-emulator-5586'))).toBe(true);
             expect(reply).toMatchObject({status: 200, body: {ok: false, result: {changedDevices: 1, failed: 1,
@@ -12399,8 +12416,12 @@ describe('emitted default-runner Android HTTP responsiveness', () => {
             const execution = reply.body.result.results[0].devices[0].stop.execution;
             expect(execution.cleanup).toEqual(expect.objectContaining({attempted: expect.any(Boolean), ok: expect.any(Boolean)}));
             if (process.platform === 'win32') {
-                const cleanupCalls = readFileSync(join(fixture.home, 'cleanup-native.log'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
-                const ownedCleanupCalls = cleanupCalls.filter(call => call.pid === nativePid);
+                const initialCalls = cleanupCalls.filter(call => call.pid === nativePid && call.kind === 'initial-identity');
+                expect(initialCalls).toEqual([expect.objectContaining({status: 0, elapsedMs: expect.any(Number), timeoutMs: expect.any(Number)})]);
+                expect(initialCalls[0].elapsedMs).toBeGreaterThanOrEqual(0);
+                expect(initialCalls[0].timeoutMs).toBeGreaterThan(0);
+                expect(initialCalls[0].timeoutMs).toBeLessThanOrEqual(2000);
+                const ownedCleanupCalls = cleanupCalls.filter(call => call.pid === nativePid && call.kind === 'qualified-tree');
                 expect(ownedCleanupCalls).toEqual([expect.objectContaining({
                     kind: 'qualified-tree', commandHash: expect.stringMatching(/^[a-f0-9]{64}$/), timeoutMs: expect.any(Number),
                 })]);

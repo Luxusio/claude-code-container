@@ -4,6 +4,7 @@ const workerPid = Number(process.argv[2]);
 const parentPid = Number(process.argv[3]);
 let completed = false;
 let cleanupStarted = false;
+let completionInput = "";
 
 function terminateWorkerTree(force = false) {
     if (!Number.isInteger(workerPid) || workerPid <= 0) return;
@@ -39,6 +40,7 @@ function parentAlive() {
 function cleanAfterParentExit() {
     if (cleanupStarted) return;
     cleanupStarted = true;
+    clearInterval(parentTimer);
     if (completed) {
         process.exit(0);
         return;
@@ -59,10 +61,9 @@ const parentTimer = setInterval(() => {
 
 process.stdin.setEncoding("utf-8");
 process.stdin.on("data", (chunk) => {
-    if (String(chunk).includes("complete")) completed = true;
+    completionInput += String(chunk);
+    if (completionInput === "complete") completed = true;
 });
-process.stdin.on("end", () => {
-    clearInterval(parentTimer);
-    cleanAfterParentExit();
-});
+process.stdin.once("end", cleanAfterParentExit);
+process.stdin.once("error", cleanAfterParentExit);
 process.stdin.resume();

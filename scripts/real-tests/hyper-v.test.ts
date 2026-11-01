@@ -1,7 +1,7 @@
 import { DEVICE_BROKER_PROTOCOL_VERSION } from "#device-lab/providers/contracts/broker-protocol.mjs";
 import { describe, expect, it, vi } from "vitest";
 import { spawnSync } from "child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { basename, join } from "path";
 import { pathToFileURL } from "url";
@@ -189,7 +189,7 @@ describe("Hyper-V Level 3 launcher", () => {
         expect(hyperVTestFiles("linux").map((file) => basename(file))).toEqual(["level2-hyper-v-linux-vm.ts"]);
     });
 
-    it("loads split TypeScript host-control modules in the standalone real-test runner", { timeout: 60000 }, () => {
+    it("loads split TypeScript host-control modules and releases the standalone worker cwd", { timeout: 60000 }, () => {
         const tempDir = mkdtempSync(join(tmpdir(), "ccc-hyper-v-source-loader-"));
         writeFileSync(join(tempDir, "package.json"), JSON.stringify({ type: "module" }));
         const fixture = join(tempDir, "level2-hyper-v-linux-vm.ts");
@@ -218,6 +218,8 @@ describe("Hyper-V Level 3 launcher", () => {
             });
             expect(result.status, result.stderr || result.stdout).toBe(0);
             expect(result.stdout).toContain("SUMMARY real-tests total=1 pass=1 skip=0 fail=0");
+            rmSync(tempDir, { recursive: true, force: true });
+            expect(existsSync(tempDir)).toBe(false);
         } finally {
             rmSync(tempDir, { recursive: true, force: true });
         }

@@ -8,6 +8,7 @@ import { consumeDeviceLabMcpToolCalls, consumeDeviceLabMcpToolSessions } from ".
 import { normalizeProviderConcurrency, partitionProviderFiles, runResourceAware } from "./provider-parallelism.ts";
 import { aggregateStepResult } from "./result-status.ts";
 import { compactMessage } from "./compact-message.ts";
+import { startProcessTreeWatchdog } from "./process-tree-watchdog-lifecycle.ts";
 
 import { flowStepArguments, toolInputError } from "../../device-lab-mcp/src/tool-arguments.mjs";
 
@@ -474,32 +475,21 @@ function uninstallProviderChildCleanup() {
 
 async function executeProviderModule(file: string) {
     const worker = resolve(dirname(fileURLToPath(import.meta.url)), "provider-worker.ts");
-    const watchdogScript = resolve(dirname(fileURLToPath(import.meta.url)), "process-tree-watchdog.ts");
     const sourceLoader = pathToFileURL(resolve(dirname(fileURLToPath(import.meta.url)), "typescript-source-loader.mjs")).href;
     try {
-        const output = await new Promise<string>((resolvePromise, rejectPromise) => {
-            const child = spawn(process.execPath, ["--import", sourceLoader, worker, file], {
-                cwd: process.cwd(),
-                env: process.env,
-                stdio: ["ignore", "inherit", "inherit", "pipe"],
-                windowsHide: true,
-                detached: process.platform !== "win32",
-            });
-            activeProviderChildren.add(child);
-            const watchdog = Number.isInteger(child.pid)
-                ? spawn(process.execPath, ["--import", sourceLoader, watchdogScript, String(child.pid), String(process.pid)], {
-                    cwd: process.cwd(),
-                    env: process.env,
-                    stdio: ["pipe", "ignore", "ignore"],
-                    windowsHide: true,
-                    detached: true,
-                })
-                : null;
-            watchdog?.unref();
-            (watchdog?.stdin as any)?.unref?.();
+        const child = spawn(process.execPath, ["--import", sourceLoader, worker, file], {
+            cwd: process.cwd(),
+            env: process.env,
+            stdio: ["ignore", "inherit", "inherit", "pipe"],
+            windowsHide: true,
+            detached: process.platform !== "win32",
+        });
+        activeProviderChildren.add(child);
+        const outputPromise = new Promise<string>((resolvePromise, rejectPromise) => {
             const chunks: Buffer[] = [];
             let outputBytes = 0;
             let outputLimitExceeded = false;
+            let childError: Error | null = null;
             child.stdio[3]?.on("data", (chunk) => {
                 const buffer = Buffer.from(chunk);
                 outputBytes += buffer.length;
@@ -511,13 +501,14 @@ async function executeProviderModule(file: string) {
                 chunks.push(buffer);
             });
             child.once("error", (error) => {
-                activeProviderChildren.delete(child);
-                watchdog?.stdin?.end("complete");
-                rejectPromise(error);
+                childError = error;
             });
             child.once("close", () => {
                 activeProviderChildren.delete(child);
-                watchdog?.stdin?.end("complete");
+                if (childError) {
+                    rejectPromise(childError);
+                    return;
+                }
                 if (outputLimitExceeded) {
                     rejectPromise(new Error(`provider worker result exceeded ${MAX_PROVIDER_WORKER_RESULT_BYTES} bytes`));
                     return;
@@ -525,6 +516,11 @@ async function executeProviderModule(file: string) {
                 resolvePromise(Buffer.concat(chunks).toString("utf-8"));
             });
         });
+        const watchdog = startProcessTreeWatchdog(child, { cwd: process.cwd(), env: process.env }, () => terminateProviderChild(child, true));
+        let output: string;
+        let watchdogError: Error | null;
+        try { output = await outputPromise; }
+        finally { watchdogError = await watchdog.complete(); }
         if (!output) {
             return {
                 ok: false,
@@ -537,6 +533,7 @@ async function executeProviderModule(file: string) {
         if (!parsed || typeof parsed !== "object" || parsed.file !== file || typeof parsed.ok !== "boolean") {
             throw new Error("provider worker returned an invalid result envelope");
         }
+        if (parsed.ok && watchdogError) throw watchdogError;
         return parsed;
     } catch (error) {
         return {

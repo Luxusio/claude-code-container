@@ -1,6 +1,5 @@
 import { spawn, spawnSync } from "child_process";
-import { dirname, resolve } from "path";
-import { fileURLToPath } from "url";
+import { startProcessTreeWatchdog } from "./process-tree-watchdog-lifecycle.ts";
 
 const MAX_CAPTURE_BYTES = 16 * 1024 * 1024;
 
@@ -34,20 +33,6 @@ export async function runSupervisedProcess(command: string, args: string[], opti
         windowsHide: true,
         detached: process.platform !== "win32",
     });
-    const watchdogScript = resolve(dirname(fileURLToPath(import.meta.url)), "process-tree-watchdog.ts");
-    const sourceLoader = new URL("./typescript-source-loader.mjs", import.meta.url).href;
-    const watchdog = Number.isInteger(child.pid)
-        ? spawn(process.execPath, ["--import", sourceLoader, watchdogScript, String(child.pid), String(process.pid)], {
-            cwd: options.cwd,
-            env: options.env,
-            stdio: ["pipe", "ignore", "ignore"],
-            windowsHide: true,
-            detached: true,
-        })
-        : null;
-    watchdog?.unref();
-    (watchdog?.stdin as any)?.unref?.();
-
     let stdout = "";
     let stderr = "";
     let capturedBytes = 0;
@@ -87,20 +72,24 @@ export async function runSupervisedProcess(command: string, args: string[], opti
         }, options.timeout)
         : null;
 
-    const outcome = await new Promise<any>((resolvePromise) => {
-        child.once("error", (error) => resolvePromise({ status: null, signal: null, error }));
-        child.once("close", (status, signal) => resolvePromise({ status, signal, error: null }));
+    const outcomePromise = new Promise<any>((resolvePromise) => {
+        let error: Error | null = null;
+        child.once("error", cause => { error = cause; });
+        child.once("close", (status, signal) => resolvePromise({ status, signal, error }));
     });
+    const watchdog = startProcessTreeWatchdog(child, options, () => terminateChildTree(child, true));
+    const outcome = await outcomePromise;
     if (timer) clearTimeout(timer);
     for (const [signal, handler] of signalHandlers) process.removeListener(signal, handler);
-    watchdog?.stdin?.end("complete");
+    const watchdogError = await watchdog.complete();
 
     return {
-        status: interruptedStatus ?? outcome.status,
+        status: interruptedStatus ?? (outcome.status === 0 && watchdogError ? 1 : outcome.status),
         signal: outcome.signal,
         stdout,
         stderr,
-        error: outcome.error || (captureExceeded ? new Error("supervised process output exceeded capture limit") : null),
+        error: outcome.error || (captureExceeded ? new Error("supervised process output exceeded capture limit") : null) || watchdogError,
+        watchdogError,
         timedOut,
     };
 }

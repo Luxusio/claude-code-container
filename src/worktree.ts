@@ -1424,9 +1424,10 @@ function trackedSubmoduleGitDirectoryIsOwned(
     parentRepository: string,
     candidateName: string,
     candidatePath: string,
+    inventoryRepository = parentRepository,
 ): boolean {
-    if (!isTrackedGitlink(parentRepository, candidateName)) return false;
-    const declaration = submoduleDeclarations(parentRepository, true)
+    if (!isTrackedGitlink(inventoryRepository, candidateName)) return false;
+    const declaration = submoduleDeclarations(inventoryRepository, true)
         .find(({ path }) => path === candidateName);
     const storageName = declaration?.name ?? candidateName;
 
@@ -1726,8 +1727,11 @@ function branchRepositories(
                 if (
                     sourceRepositories
                     && (
-                        !sourceRepository
-                        || !isValidWorktree(entry.path, sourceRepository)
+                        sourceRepository
+                            ? !isValidWorktree(entry.path, sourceRepository)
+                            : !sourceRoot || !isOwnedTrackedWorkspaceRepository(
+                                sourceRoot, workspacePath, nestedRepositories, entry,
+                            )
                     )
                 ) {
                     throw new Error(
@@ -1758,6 +1762,47 @@ function branchRepositories(
     return scanDirectory(workspacePath, { strict: true })
         .filter((entry) => entry.isGitRepo)
         .map(({ name, path }) => ({ name, path }));
+}
+
+function isOwnedTrackedWorkspaceRepository(
+    sourceRoot: string,
+    workspacePath: string,
+    repositories: WorkspaceEntry[],
+    entry: WorkspaceEntry,
+): boolean {
+    const name = normalizeNestedRepositoryName(entry.name);
+    if (!name || name !== entry.name || !isNestedTrackedGitlink(workspacePath, repositories, entry)) return false;
+    try {
+        const root = captureDirectoryIdentity(sourceRoot);
+        const ancestors = [{ path: sourceRoot, identity: root }];
+        let sourcePath = root.realpath;
+        for (const segment of name.split("/")) {
+            sourcePath = join(sourcePath, segment);
+            ancestors.push({ path: sourcePath, identity: captureDirectoryIdentity(sourcePath) });
+        }
+        const source = captureNestedRepositoryIdentity(sourcePath);
+        if (relativePathEscapesRoot(relative(root.realpath, source.directory.realpath))) return false;
+        const parent = repositories
+            .filter(candidate => candidate.name !== name && name.startsWith(`${candidate.name}/`))
+            .sort((left, right) => right.name.length - left.name.length)[0];
+        const sourceParent = parent ? join(root.realpath, ...parent.name.split("/")) : sourceRoot;
+        const parentIdentity = captureNestedRepositoryIdentity(sourceParent);
+        const kind = gitLinkKind(join(sourcePath, ".git"));
+        if (kind === "gitlink" && !trackedSubmoduleGitDirectoryIsOwned(
+            sourceParent,
+            parent ? name.slice(parent.name.length + 1) : name,
+            sourcePath,
+            parent?.path ?? workspacePath,
+        )) return false;
+        if (kind === "worktree" && gitLinkKind(join(sourceRoot, ".git")) !== "worktree") return false;
+        if (!isValidWorktree(entry.path, sourcePath)) return false;
+        assertNestedRepositoryIdentity(sourcePath, source);
+        assertNestedRepositoryIdentity(sourceParent, parentIdentity);
+        for (const ancestor of ancestors) assertDirectoryIdentity(ancestor.path, ancestor.identity);
+        return true;
+    } catch {
+        return false;
+    }
 }
 
 export function hasGitMetadata(repositoryPath: string): boolean {
@@ -1820,8 +1865,12 @@ function assertWorkspaceOwnership(
         for (const destination of destinationRepositories) {
             const source = sourceRepositories.get(destination.name);
             if (!source) {
-                if (gitLinkKind(join(destination.path, ".git")) === "directory"
+                const kind = gitLinkKind(join(destination.path, ".git"));
+                if (kind === "directory"
                     && isUntrackedNestedRepository(workspacePath, destination.name)) continue;
+                if (kind === "worktree" && isOwnedTrackedWorkspaceRepository(
+                    resolvedSource, workspacePath, destinationRepositories, destination,
+                )) continue;
                 throw new Error(`Workspace contains unowned Git repository '${destination.name}'.`);
             }
             const kind = gitLinkKind(join(destination.path, ".git"));

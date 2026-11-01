@@ -1,5 +1,8 @@
 import { createHash } from "crypto";
 import { spawn } from "child_process";
+import { performance } from "node:perf_hooks";
+import { terminateOwnedRuntimeProcessTree } from "@ccc/device-lab/providers/state/process-identity.mjs";
+import { waitForExpectedRuntimeExitAsync } from "@ccc/device-lab/device-lab/adapters/process/runtime-exit.js";
 import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -23,13 +26,14 @@ function parseToolJson(result: unknown): Record<string, unknown> {
 }
 
 describe("device-lab MCP Android emulator lifecycle with fake SDK", () => {
-    let context: FakeAndroidMcpContext;
+    let context: FakeAndroidMcpContext | undefined;
     let client: FakeAndroidMcpContext["client"];
     let homeDir: string;
     let binDir: string;
     let logPath: string;
 
     beforeEach(async () => {
+        context = undefined;
         context = await createFakeAndroidMcpContext({ entrypoint: join(repoRoot, "dist/device-lab-mcp/server.mjs") });
         client = context.client;
         homeDir = context.homeDir;
@@ -171,670 +175,823 @@ describe("device-lab MCP Android emulator lifecycle with fake SDK", () => {
     });
 
 
-    it("creates and deletes owner-prefixed AVDs through avdmanager without a separate provisioning flag", { timeout: TIMEOUT }, async () => {
-        const inventory = await client.callTool({
-            name: "devices",
-            arguments: { view: "available", backend: "android-emulator" },
-        });
-        const choices = JSON.parse(((inventory.content as Array<{ text?: string }>)[0].text ?? "{}"));
-        const ownerId = choices.ownerId;
-        const avdName = `ccc-${ownerId}-pixel-owned`;
+    describe("independent provisioned emulator scenarios", () => {
+        let ownerId: string, avdName: string, avdDataPath: string, avdIniPath: string;
+        let prepared = false;
+        type OwnedRuntime = {runtimeId: string; pid: number; processIdentity: {pid: number; startToken: string; commandHash: string}};
+        const runtimes = new Map<string, OwnedRuntime>();
+        let unqualifiedRuntime = false;
 
-        const create = await client.callTool({
-            name: "create_android_emulator",
-            arguments: {
+        function currentDevice(home = homeDir, owner = ownerId): Record<string, unknown> | undefined {
+            const statePath = join(home, ".ccc", "devices", "owners", owner, "android", "devices.json");
+            if (!existsSync(statePath)) return undefined;
+            const state = JSON.parse(readFileSync(statePath, "utf8")) as {devices: Array<Record<string, unknown>>};
+            return state.devices.find(device => device.id === "android-pixel-owned");
+        }
 
-                name: "Pixel Owned",
+        function rememberCurrentRuntimes() {
+            const device = currentDevice();
+            for (const value of [device?.runtime, device?.recording]) {
+                if (!value || typeof value !== "object") continue;
+                const runtime = value as Record<string, unknown>;
+                if (typeof runtime.pid !== "number") continue;
+                const identity = runtime.processIdentity as OwnedRuntime["processIdentity"] | undefined;
+                if (typeof runtime.runtimeId !== "string" || !identity || identity.pid !== runtime.pid
+                    || typeof identity.startToken !== "string" || typeof identity.commandHash !== "string") {
+                    unqualifiedRuntime = true;
+                    continue;
+                }
+                const owned = structuredClone(runtime) as OwnedRuntime;
+                runtimes.set(`${owned.pid}:${identity.startToken}`, owned);
+            }
+        }
+
+        beforeEach(async () => {
+            prepared = false; unqualifiedRuntime = false; runtimes.clear();
+            const inventory = await client.callTool({
+                name: "devices",
+                arguments: { view: "available", backend: "android-emulator" },
+            });
+            const choices = JSON.parse(((inventory.content as Array<{ text?: string }>)[0].text ?? "{}"));
+            ownerId = choices.ownerId;
+            avdName = `ccc-${ownerId}-pixel-owned`;
+
+            prepared = true;
+            const create = await client.callTool({
+                name: "create_android_emulator",
+                arguments: {
+
+                    name: "Pixel Owned",
+                    avdName,
+                    port: 5582,
+                    systemImage: choices.systemImages[0],
+                    deviceProfile: choices.deviceProfiles[0],
+                },
+            });
+            expect(create.isError).not.toBe(true);
+            const created = JSON.parse(((create.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+                device: { deviceId: string; avdName: string; provisioned: boolean; status: string };
+            };
+            expect(created.device).toEqual(expect.objectContaining({
+                deviceId: "android-pixel-owned",
                 avdName,
-                port: 5582,
-                systemImage: choices.systemImages[0],
-                deviceProfile: choices.deviceProfiles[0],
-            },
-        });
-        expect(create.isError).not.toBe(true);
-        const created = JSON.parse(((create.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
-            device: { deviceId: string; avdName: string; provisioned: boolean; status: string };
-        };
-        expect(created.device).toEqual(expect.objectContaining({
-            deviceId: "android-pixel-owned",
-            avdName,
-            provisioned: true,
-            status: "stopped",
-        }));
-        expect(created.device).not.toHaveProperty("avdRoot");
-        const avdDataPath = join(homeDir, ".android", "avd", `${avdName}.avd`);
-        const avdIniPath = join(homeDir, ".android", "avd", `${avdName}.ini`);
-        mkdirSync(avdDataPath, { recursive: true });
-        writeFileSync(join(avdDataPath, "userdata-qemu.img"), "owned-avd-data");
-        writeFileSync(avdIniPath, `path=${avdDataPath}`);
-
-        const start = await client.callTool({
-            name: "start",
-            arguments: { deviceId: "android-pixel-owned", bootTimeoutMs: 1000 },
-        });
-        expect(start.isError).not.toBe(true);
-        const started = JSON.parse(((start.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
-            device: { status: string; bootReady: boolean };
-            boot: { ready: boolean };
-        };
-        expect(started.boot.ready).toBe(true);
-        expect(started.device.status).toBe("running");
-        expect(started.device.bootReady).toBe(true);
-
-        let releaseOperation!: () => void;
-        let operationEntered!: () => void;
-        const operationGate = new Promise<void>((resolve) => { releaseOperation = resolve; });
-        const operationLockEntered = new Promise<void>((resolve) => { operationEntered = resolve; });
-        const [testOwnerId] = readdirSync(join(homeDir, ".ccc", "devices", "owners"));
-        const operationKey = createHash("sha256").update("android-pixel-owned").digest("hex").slice(0, 32);
-        const operationLock = join(homeDir, ".ccc", "devices", "owners", testOwnerId, "android", "operations", `${operationKey}.lock`);
-        const operationHolder = withSharedMutationLockAsync(operationLock, async () => {
-            operationEntered();
-            await operationGate;
-        });
-        await operationLockEntered;
-        let execSettled = false;
-        const serializedExec = client.callTool({
-            name: "exec",
-            arguments: { deviceId: "android-pixel-owned", command: "echo serialized" },
-        }).then((result) => {
-            execSettled = true;
-            return result;
-        });
-        try {
-            await new Promise((resolve) => setTimeout(resolve, 50));
-            expect(execSettled).toBe(false);
-            const waitResult = await client.callTool({
-                name: "wait_for_app",
-                arguments: { deviceId: "android-pixel-owned", appId: "com.example.ready", timeoutMs: 5000, intervalMs: 50 },
-            });
-            // This checks read-only observation bypassing a held mutation lock, not
-            // native fixture process startup within an artificial 100ms deadline.
-            expect(waitResult.isError, JSON.stringify(waitResult.content)).not.toBe(true);
-            expect(parseToolJson(waitResult)).toMatchObject({ running: true, provider: "adb" });
-            expect(execSettled).toBe(false);
-        } finally {
-            releaseOperation();
-            await operationHolder;
-        }
-        expect((await serializedExec).isError).not.toBe(true);
-
-        const sessionStatus = await client.callTool({
-            name: "status",
-            arguments: { deviceId: "android-pixel-owned" },
-        });
-        expect(sessionStatus.isError).not.toBe(true);
-        expect(parseToolJson(sessionStatus)).toEqual(expect.objectContaining({
-            automation: expect.objectContaining({ deviceId: "android-pixel-owned", provider: "adb", lazy: true }),
-            device: expect.objectContaining({ deviceId: "android-pixel-owned", status: "running" }),
-
-        }));
-
-        const primitiveCalls: Array<[string, Record<string, unknown>, Record<string, unknown>]> = [
-            ["click", { deviceId: "android-pixel-owned", x: 10, y: 20 }, { provider: "adb", tapped: { x: 10, y: 20 } }],
-            ["click", { count: 2, deviceId: "android-pixel-owned", x: 11, y: 21 }, { provider: "adb", doubleTapped: { x: 11, y: 21 } }],
-            ["long_press", { deviceId: "android-pixel-owned", x: 12, y: 22, durationMs: 900 }, { provider: "adb", longPressed: { x: 12, y: 22, durationMs: 900 } }],
-            ["swipe", { deviceId: "android-pixel-owned", x1: 1, y1: 2, x2: 30, y2: 40, durationMs: 500 }, { provider: "adb", swiped: { x1: 1, y1: 2, x2: 30, y2: 40, durationMs: 500 } }],
-            ["drag", { deviceId: "android-pixel-owned", x1: 3, y1: 4, x2: 50, y2: 60, durationMs: 800 }, { provider: "adb", dragged: { x1: 3, y1: 4, x2: 50, y2: 60, durationMs: 800 } }],
-            ["type", { deviceId: "android-pixel-owned", text: "hello world" }, { provider: "adb", typed: true }],
-            ["key", { deviceId: "android-pixel-owned", keyCode: 82 }, { provider: "adb", key: 82 }],
-            ["home", { deviceId: "android-pixel-owned" }, { provider: "adb", home: true }],
-            ["back", { deviceId: "android-pixel-owned" }, { provider: "adb", back: true }],
-            ["forward", { deviceId: "android-pixel-owned" }, { provider: "adb", forward: true }],
-            ["recents", { deviceId: "android-pixel-owned" }, { provider: "adb", recents: true }],
-            ["power", { deviceId: "android-pixel-owned" }, { provider: "adb", power: true }],
-            ["lock", { deviceId: "android-pixel-owned" }, { provider: "adb", locked: true }],
-            ["unlock", { deviceId: "android-pixel-owned" }, { provider: "adb", unlocked: true }],
-            ["set_orientation", { deviceId: "android-pixel-owned", orientation: "landscape" }, { provider: "adb", orientation: "landscape", rotation: "1" }],
-            ["set_orientation", { orientation: "reverse-landscape", deviceId: "android-pixel-owned" }, { provider: "adb", orientation: "reverse-landscape", rotation: "3" }],
-            ["open_url", { deviceId: "android-pixel-owned", url: "https://example.test/path" }, { provider: "adb", openedUrl: "https://example.test/path" }],
-            ["permission", { action: "grant", deviceId: "android-pixel-owned", appId: "com.example.mobile", permission: "android.permission.CAMERA" }, { provider: "adb", permission: { appId: "com.example.mobile", permission: "android.permission.CAMERA", action: "grant" } }],
-            ["permission", { action: "revoke", deviceId: "android-pixel-owned", appId: "com.example.mobile", permission: "android.permission.CAMERA" }, { provider: "adb", permission: { appId: "com.example.mobile", permission: "android.permission.CAMERA", action: "revoke" } }],
-            ["set_location", { deviceId: "android-pixel-owned", latitude: 37.7749, longitude: -122.4194, altitude: 10 }, { provider: "adb-emulator", location: { latitude: 37.7749, longitude: -122.4194, altitude: 10 } }],
-            ["set_battery", { deviceId: "android-pixel-owned", level: 42, charging: true, confirmDestructive: true }, { provider: "adb", battery: { level: 42, status: null, charging: true } }],
-            ["set_network", { deviceId: "android-pixel-owned", wifi: false, data: true, confirmDestructive: true }, { provider: "adb", network: { airplaneMode: null, wifi: false, data: true } }],
-            ["set_network", { deviceId: "android-pixel-owned", airplaneMode: true, confirmDestructive: true }, { provider: "adb", network: { airplaneMode: true, wifi: null, data: null } }],
-            ["clipboard", { deviceId: "android-pixel-owned", text: "clip text" }, { provider: "adb", clipboard: { set: true } }],
-            ["clipboard", { deviceId: "android-pixel-owned" }, { provider: "adb", text: "ok\n", status: 0 }],
-        ] as const;
-        for (const [name, callArgs, expectedPayload] of primitiveCalls) {
-            const action = await client.callTool({ name, arguments: callArgs });
-            expect(action.isError, name).not.toBe(true);
-            expect(parseToolJson(action)).toEqual(expect.objectContaining(expectedPayload));
-        }
-        const logBeforeUnsupportedOrientation = readFileSync(logPath, "utf8");
-        const unsupportedOrientation = await client.callTool({ name: "set_orientation", arguments: { deviceId: "android-pixel-owned", orientation: "diagonal" } });
-        expect(unsupportedOrientation.isError).toBe(true);
-        expect((unsupportedOrientation.content as Array<{ text?: string }>)[0]?.text).toContain("orientation");
-        expect(readFileSync(logPath, "utf8")).toBe(logBeforeUnsupportedOrientation);
-        const waitText = await client.callTool({
-            name: "wait_for_text",
-            arguments: { deviceId: "android-pixel-owned", text: "Hello", timeoutMs: 5000, intervalMs: 50 },
-        });
-        expect(waitText.isError).not.toBe(true);
-        const waitTextPayload = JSON.parse(((waitText.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
-            found: boolean;
-            provider: string;
-        };
-        expect(waitTextPayload).toEqual(expect.objectContaining({ found: true, provider: "adb-uiautomator" }));
-
-        const waitApp = await client.callTool({
-            name: "wait_for_app",
-            arguments: { deviceId: "android-pixel-owned", appId: "com.example.mobile", timeoutMs: 5000, intervalMs: 50 },
-        });
-        expect(waitApp.isError).not.toBe(true);
-        const waitAppPayload = JSON.parse(((waitApp.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
-            running: boolean;
-            provider: string;
-        };
-        expect(waitAppPayload).toEqual(expect.objectContaining({ running: true, provider: "adb" }));
-
-        const flow = await client.callTool({
-            name: "run_flow",
-            arguments: {
-                steps: [
-                    { label: "tap primary", tool: "click", arguments: { deviceId: "android-pixel-owned", x: 15, y: 25, implicitBroker: false } },
-                    { label: "wait title", tool: "wait_for_text", arguments: { deviceId: "android-pixel-owned", text: "Hello", timeoutMs: 5000, intervalMs: 50, implicitBroker: false } },
-                    { label: "capture", tool: "screenshot", arguments: { deviceId: "android-pixel-owned", implicitBroker: false } },
-                ],
-            },
-        });
-        expect(flow.isError).not.toBe(true);
-        const flowPayload = JSON.parse(((flow.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
-            ok: boolean;
-            results: Array<{ label: string; isError: boolean; contentIndex?: number; contentCount?: number; content: Array<{ type: string; value?: { found?: boolean }; bytes?: number }> }>;
-        };
-        expect(flowPayload.ok).toBe(true);
-        expect(flowPayload.results.map((result) => result.label)).toEqual(["tap primary", "wait title", "capture"]);
-        expect(flowPayload.results[1].content[0].value?.found).toBe(true);
-        expect(flowPayload.results[2]).toMatchObject({ contentIndex: 1, contentCount: 1 });
-        const captured = (flow.content as Array<{ type: string; data?: string }>)[flowPayload.results[2].contentIndex!];
-        expect(captured.type).toBe("image");
-        expect(Buffer.from(captured.data!, "base64").subarray(1, 4).toString()).toBe("PNG");
-
-        const disallowedFlow = await client.callTool({
-            name: "run_flow",
-            arguments: {
-                steps: [
-                    { tool: "start", arguments: { deviceId: "android-pixel-owned" } },
-                    { tool: "back", arguments: { deviceId: "android-pixel-owned" } },
-                ],
-            },
-        });
-        expect(disallowedFlow.isError).toBe(true);
-        const disallowedPayload = JSON.parse(((disallowedFlow.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
-            ok: boolean;
-            stoppedAt: number;
-            results: Array<{ error: string }>;
-        };
-        expect(disallowedPayload.ok).toBe(false);
-        expect(disallowedPayload.stoppedAt).toBe(0);
-        expect(disallowedPayload.results[0].error).toContain("does not allow step tool: start");
-
-        const deviceFlow = await client.callTool({
-            name: "run_flow",
-            arguments: {
-                steps: [
-                    { label: "status", tool: "status", arguments: { deviceId: "android-pixel-owned", implicitBroker: false } },
-                    { label: "wait title", tool: "wait_for_text", arguments: { deviceId: "android-pixel-owned", text: "Hello", timeoutMs: 5000, intervalMs: 50, implicitBroker: false } },
-                    { label: "capture", tool: "screenshot", arguments: { deviceId: "android-pixel-owned", implicitBroker: false } },
-                ],
-            },
-        });
-        expect(deviceFlow.isError).not.toBe(true);
-        const deviceFlowPayload = JSON.parse(((deviceFlow.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
-            ok: boolean;
-            results: Array<{ label: string; isError: boolean; contentIndex?: number; contentCount?: number; content: Array<{ type: string; value?: { device?: { deviceId?: string }; found?: boolean }; bytes?: number }> }>;
-        };
-        expect(deviceFlowPayload.ok).toBe(true);
-        expect(deviceFlowPayload.results.map((result) => result.label)).toEqual(["status", "wait title", "capture"]);
-        expect(deviceFlowPayload.results[0].content[0].value?.device?.deviceId).toBe("android-pixel-owned");
-        expect(deviceFlowPayload.results[1].content[0].value?.found).toBe(true);
-        expect(deviceFlowPayload.results[2]).toMatchObject({ contentIndex: 1, contentCount: 1 });
-        expect((deviceFlow.content as Array<{ type: string }>)[deviceFlowPayload.results[2].contentIndex!].type).toBe("image");
-
-        const unsafeDeviceFlow = await client.callTool({
-            name: "run_flow",
-            arguments: {
-                steps: [
-                    { tool: "delete", arguments: { deviceId: "android-pixel-owned", confirmDestructive: true } },
-                    { tool: "back", arguments: { deviceId: "android-pixel-owned" } },
-                ],
-            },
-        });
-        expect(unsafeDeviceFlow.isError).toBe(true);
-        const unsafeDeviceFlowPayload = JSON.parse(((unsafeDeviceFlow.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
-            ok: boolean;
-            stoppedAt: number;
-            results: Array<{ error: string }>;
-        };
-        expect(unsafeDeviceFlowPayload.ok).toBe(false);
-        expect(unsafeDeviceFlowPayload.stoppedAt).toBe(0);
-        expect(unsafeDeviceFlowPayload.results[0].error).toContain("device_run_flow does not allow step tool: delete");
-
-        const screenshot = await client.callTool({
-            name: "screenshot",
-            arguments: { deviceId: "android-pixel-owned" },
-        });
-        expect(screenshot.isError).not.toBe(true);
-        const expectedAndroidPng = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, ...Buffer.from("FAKEPNG")]).toString("base64");
-        expect((screenshot.content as Array<{ type: string; data: string; mimeType: string }>)[0]).toEqual({
-            type: "image",
-            data: expectedAndroidPng,
-            mimeType: "image/png",
-        });
-
-        const largeScreencapMarker = join(homeDir, "fake-screencap-large");
-        writeFileSync(largeScreencapMarker, "1");
-        try {
-            const largeScreenshot = await client.callTool({
-                name: "screenshot",
-                arguments: { deviceId: "android-pixel-owned" },
-            });
-            expect(largeScreenshot.isError).not.toBe(true);
-            const image = (largeScreenshot.content as Array<{ type: string; data: string; mimeType: string }>)[0];
-            expect(image.type).toBe("image");
-            expect(Buffer.from(image.data, "base64").length).toBeGreaterThan(2 * 1024 * 1024);
-        } finally {
-            rmSync(largeScreencapMarker, { force: true });
-        }
-
-        const flakyScreencapMarker = join(homeDir, "fake-screencap-exit-1");
-        writeFileSync(flakyScreencapMarker, "1");
-        try {
-            const flakyScreenshot = await client.callTool({
-                name: "screenshot",
-                arguments: { deviceId: "android-pixel-owned" },
-            });
-            expect(flakyScreenshot.isError).not.toBe(true);
-            expect((flakyScreenshot.content as Array<{ type: string; mimeType?: string; data?: string }>)[0]).toEqual(expect.objectContaining({
-                type: "image",
-                mimeType: "image/png",
-                data: expectedAndroidPng,
+                provisioned: true,
+                status: "stopped",
             }));
-        } finally {
-            rmSync(flakyScreencapMarker, { force: true });
-        }
+            expect(created.device).not.toHaveProperty("avdRoot");
+            avdDataPath = join(homeDir, ".android", "avd", `${avdName}.avd`);
+            avdIniPath = join(homeDir, ".android", "avd", `${avdName}.ini`);
+            mkdirSync(avdDataPath, { recursive: true });
+            writeFileSync(join(avdDataPath, "userdata-qemu.img"), "owned-avd-data");
+            writeFileSync(avdIniPath, `path=${avdDataPath}`);
 
-        const initialRecordStatus = await client.callTool({
-            name: "record_video",
-            arguments: { action: "status", deviceId: "android-pixel-owned" },
-        });
-        expect(initialRecordStatus.isError).not.toBe(true);
-        const initialRecordPayload = JSON.parse(((initialRecordStatus.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
-            recording: unknown;
-            provider: string;
-        };
-        expect(initialRecordPayload.recording).toBeNull();
-        expect(initialRecordPayload.provider).toBe("adb-screenrecord");
+            const start = await client.callTool({
+                name: "start",
+                arguments: { deviceId: "android-pixel-owned", bootTimeoutMs: 1000 },
+            });
+            rememberCurrentRuntimes();
+            expect(start.isError, JSON.stringify(start.content)).not.toBe(true);
+            const started = JSON.parse(((start.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+                device: { status: string; bootReady: boolean };
+                boot: { ready: boolean };
+            };
+            expect(started.boot.ready).toBe(true);
+            expect(started.device.status).toBe("running");
+            expect(started.device.bootReady).toBe(true);
+        }, TIMEOUT);
 
-        const stopWithoutRecording = await client.callTool({
-            name: "record_video",
-            arguments: { action: "stop", deviceId: "android-pixel-owned" },
-        });
-        expect(stopWithoutRecording.isError).toBe(true);
-        expect((stopWithoutRecording.content as Array<{ text?: string }>)[0].text).toContain("No Android recording active");
+        afterEach(async () => {
+            if (!prepared || !context) return;
+            // This hook owns the context immediately. A hook timeout must never
+            // let outer teardown remove files before native exit is confirmed.
+            const ownedContext = context, ownedOwnerId = ownerId;
+            context = undefined;
+            const failures: unknown[] = [];
+            const deadline = performance.now() + TIMEOUT;
+            let settled = true, device: Record<string, unknown> | undefined;
+            try { rememberCurrentRuntimes(); device = currentDevice(ownedContext.homeDir, ownedOwnerId); }
+            catch (error) { failures.push(error); settled = false; }
+            const capturedRuntimes = [...runtimes.values()], hadUnqualifiedRuntime = unqualifiedRuntime;
+            if (device) {
+                try {
+                    const stopped = await ownedContext.client.callTool({name: "stop", arguments: {deviceId: "android-pixel-owned"}});
+                    expect(stopped.isError, JSON.stringify(stopped.content)).not.toBe(true);
+                } catch (error) { failures.push(error); }
+            }
+            for (const runtime of capturedRuntimes) {
+                const remainingMs = () => Math.max(0, deadline - performance.now());
+                try {
+                    let exited = await waitForExpectedRuntimeExitAsync(runtime.processIdentity, Math.min(3000, remainingMs()));
+                    if (exited !== "ended" && remainingMs() >= 1) {
+                        await terminateOwnedRuntimeProcessTree(runtime, "owned Android scenario runtime", {timeoutMs: 3000, remainingMs});
+                        exited = await waitForExpectedRuntimeExitAsync(runtime.processIdentity, Math.min(3000, remainingMs()));
+                    }
+                    if (exited !== "ended") throw new Error(`Owned Android runtime ${runtime.pid} exit remains unconfirmed`);
+                } catch (error) { failures.push(error); settled = false; }
+            }
+            if (hadUnqualifiedRuntime) {
+                failures.push(new Error("Owned Android scenario runtime identity was unavailable"));
+                settled = false;
+            }
+            if (settled) {
+                try {
+                    if (currentDevice(ownedContext.homeDir, ownedOwnerId)) {
+                        const deleted = await ownedContext.client.callTool({name: "delete", arguments: {deviceId: "android-pixel-owned", deleteAvd: true, confirmDestructive: true}});
+                        expect(deleted.isError, JSON.stringify(deleted.content)).not.toBe(true);
+                    }
+                } catch (error) { failures.push(error); }
+            }
+            try { expect(readFileSync(ownedContext.logPath, "utf8")).not.toContain("appium"); }
+            catch (error) { failures.push(error); }
+            if (settled) {
+                try { await cleanupFakeAndroidMcpContext(ownedContext); } catch (error) { failures.push(error); }
+            } else {
+                // Retain recovery evidence when native identity cannot prove exit;
+                // closing the transport is never treated as emulator settlement.
+                try { await ownedContext.client.close(); } catch (error) { failures.push(error); }
+                failures.push(new Error(`Retained Android fixture after unconfirmed runtime cleanup: ${ownedContext.homeDir} ${ownedContext.binDir}`));
+            }
+            if (failures.length) throw new AggregateError(failures, "Owned Android scenario cleanup failed");
+        }, TIMEOUT);
 
-        const recordStart = await client.callTool({
-            name: "record_video",
-            arguments: { action: "start",
-                deviceId: "android-pixel-owned",
-                remotePath: "/sdcard/custom-android-recording.mp4",
-                localPath: join(homeDir, "custom-android-recording.mp4"),
-                timeLimitSec: 5,
-            },
-        });
-        expect(recordStart.isError).not.toBe(true);
-        await expect.poll(() => readFileSync(logPath, "utf8")).toContain("adb -s emulator-5582 shell screenrecord --time-limit 5 /sdcard/custom-android-recording.mp4");
-        const recordStartPayload = JSON.parse(((recordStart.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
-            recording: { active: boolean; provider: string; runtimeId: string; processIdentity: { pid: number; startToken: string; commandHash: string }; remotePath: string; localPath: string; timeLimitSec: number };
-        };
-        expect(recordStartPayload.recording).toEqual(expect.objectContaining({
-            active: true,
-            provider: "adb-screenrecord",
-            runtimeId: expect.any(String),
-            processIdentity: expect.objectContaining({
-                pid: expect.any(Number),
-                startToken: expect.any(String),
-                commandHash: expect.stringMatching(/^[a-f0-9]{64}$/),
-            }),
-            remotePath: "/sdcard/custom-android-recording.mp4",
-            localPath: join(homeDir, "custom-android-recording.mp4"),
-            timeLimitSec: 5,
-        }));
-
-        const duplicateRecordStart = await client.callTool({
-            name: "record_video",
-            arguments: { action: "start", deviceId: "android-pixel-owned" },
-        });
-        expect(duplicateRecordStart.isError).toBe(true);
-        expect((duplicateRecordStart.content as Array<{ text?: string }>)[0].text).toContain("Android recording already active");
-
-        const activeRecordStatus = await client.callTool({
-            name: "record_video",
-            arguments: { action: "status", deviceId: "android-pixel-owned" },
-        });
-        const activeRecordPayload = JSON.parse(((activeRecordStatus.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
-            recording: { active: boolean; provider: string };
-        };
-        expect(activeRecordPayload.recording).toEqual(expect.objectContaining({ active: true, provider: "adb-screenrecord" }));
-
-        const recordStop = await client.callTool({
-            name: "record_video",
-            arguments: { action: "stop", deviceId: "android-pixel-owned" },
-        });
-        expect(recordStop.isError).not.toBe(true);
-        const recordStopPayload = JSON.parse(((recordStop.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
-            stopped: boolean;
-            provider: string;
-            recording: { active: boolean; provider: string; remotePath: string; localPath: string; timeLimitSec: number };
-            device: { recording: unknown };
-        };
-        expect(recordStopPayload.stopped).toBe(true);
-        expect(recordStopPayload.provider).toBe("adb-screenrecord");
-        expect(recordStopPayload.recording).toEqual(expect.objectContaining({
-            active: false,
-            provider: "adb-screenrecord",
-            remotePath: "/sdcard/custom-android-recording.mp4",
-            localPath: join(homeDir, "custom-android-recording.mp4"),
-            timeLimitSec: 5,
-        }));
-        expect(recordStopPayload.device.recording).toBeNull();
-
-        const finalRecordStatus = await client.callTool({
-            name: "record_video",
-            arguments: { action: "status", deviceId: "android-pixel-owned" },
-        });
-        expect(JSON.parse(((finalRecordStatus.content as Array<{ text?: string }>)[0].text ?? "{}"))).toEqual(expect.objectContaining({
-            recording: null,
-            provider: "adb-screenrecord",
-        }));
-
-        const failedRecordStart = await client.callTool({
-            name: "record_video",
-            arguments: { action: "start",
-                deviceId: "android-pixel-owned",
-                remotePath: "/sdcard/fail-immediate-recording.mp4",
-                localPath: join(homeDir, "fail-immediate-android-recording.mp4"),
-                timeLimitSec: 5,
-            },
-        });
-        expect(failedRecordStart.isError).toBe(true);
-        expect((failedRecordStart.content as Array<{ text?: string }>)[0].text).toContain("recorder exited before it was ready");
-        const statusAfterFailedStart = await client.callTool({
-            name: "record_video",
-            arguments: { action: "status", deviceId: "android-pixel-owned" },
-        });
-        expect(JSON.parse(((statusAfterFailedStart.content as Array<{ text?: string }>)[0].text ?? "{}")).recording).toBeNull();
-
-        const naturalExitRelease = join(homeDir, "fake-adb-release-natural-recording");
-        try {
-            const naturalExitStart = await client.callTool({
+        it("creates and deletes owner-prefixed AVDs through avdmanager without a separate provisioning flag", { timeout: TIMEOUT }, async () => {
+            const stopCleanupRecordStart = await client.callTool({
                 name: "record_video",
                 arguments: { action: "start",
                     deviceId: "android-pixel-owned",
-                    remotePath: "/sdcard/natural-exit-recording.mp4",
-                    localPath: join(homeDir, "natural-exit-android-recording.mp4"),
+                    remotePath: "/sdcard/stop-cleanup-recording.mp4",
+                    localPath: join(homeDir, "stop-cleanup-android-recording.mp4"),
                     timeLimitSec: 5,
                 },
             });
-            expect(naturalExitStart.isError, JSON.stringify(naturalExitStart.content)).not.toBe(true);
-            expect(parseToolJson(naturalExitStart)).toMatchObject({ recording: { active: true } });
-        } finally {
-            // Keep the real child alive through Windows identity capture, then let
-            // it exit normally. Release even if a start assertion fails.
-            writeFileSync(naturalExitRelease, "release");
-        }
-        await expect.poll(async () => {
-            const status = await client.callTool({
+            expect(stopCleanupRecordStart.isError).not.toBe(true);
+            await expect.poll(() => readFileSync(logPath, "utf8")).toContain("adb -s emulator-5582 shell screenrecord --time-limit 5 /sdcard/stop-cleanup-recording.mp4");
+            rememberCurrentRuntimes();
+
+            const deleteWhileRunning = await client.callTool({
+                name: "delete",
+                arguments: { deviceId: "android-pixel-owned", deleteAvd: true, confirmDestructive: true },
+            });
+            expect(deleteWhileRunning.isError).toBe(true);
+
+            const stop = await client.callTool({
+                name: "stop",
+                arguments: { deviceId: "android-pixel-owned" },
+            });
+            expect(stop.isError, JSON.stringify(stop)).not.toBe(true);
+            const stoppedPayload = JSON.parse(((stop.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+                device: { recording: unknown; status: string };
+            };
+            expect(stoppedPayload.device.status).toBe("stopped");
+            expect(stoppedPayload.device.recording).toBeNull();
+
+            const statusAfterDeviceStop = await client.callTool({
                 name: "record_video",
                 arguments: { action: "status", deviceId: "android-pixel-owned" },
             });
-            expect(status.isError, JSON.stringify(status.content)).not.toBe(true);
-            return parseToolJson(status).recording;
-        }, { timeout: 15000, interval: 100 }).toMatchObject({
-            active: false,
-            remotePath: "/sdcard/natural-exit-recording.mp4",
-        });
-        const naturalExitStop = await client.callTool({
-            name: "record_video",
-            arguments: { action: "stop", deviceId: "android-pixel-owned" },
-        });
-        expect(naturalExitStop.isError).not.toBe(true);
+            expect(JSON.parse(((statusAfterDeviceStop.content as Array<{ text?: string }>)[0].text ?? "{}")).recording).toBeNull();
 
-        const retryDestination = join(homeDir, "fail-once-pull-android-recording.mp4");
-        writeFileSync(retryDestination, "original");
-        const pullFailStart = await client.callTool({
-            name: "record_video",
-            arguments: { action: "start",
-                deviceId: "android-pixel-owned",
+            const deleted = await client.callTool({
+                name: "delete",
+                arguments: { deviceId: "android-pixel-owned", deleteAvd: true, confirmDestructive: true },
+            });
+            expect(deleted.isError).not.toBe(true);
+            const deletedPayload = JSON.parse(((deleted.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+                deleted: string;
+                avdDeleted: boolean;
+            };
+            expect(deletedPayload).toEqual({ deleted: "android-pixel-owned", avdDeleted: true });
+            expect(existsSync(avdDataPath)).toBe(false);
+            expect(existsSync(avdIniPath)).toBe(false);
+
+            const log = readFileSync(logPath, "utf-8");
+            expect(log).toContain(`avdmanager create avd --name ${avdName} --package system-images;android-35;google_apis;x86_64 --force --device pixel_6`);
+            expect(log).toContain(`emulator -avd ${avdName} -port 5582 -no-window -no-audio -netsim-args --no-cli-ui --no-web-ui`);
+            expect(log).toContain("adb -s emulator-5582 shell getprop sys.boot_completed");
+            expect(log).toContain("adb -s emulator-5582 shell screenrecord --time-limit 5 /sdcard/stop-cleanup-recording.mp4");
+            expect(log).not.toContain(`avdmanager delete avd --name ${avdName}`);
+        });
+
+        it("serializes mutations while read-only app observation bypasses the operation lock", { timeout: TIMEOUT }, async () => {
+            let releaseOperation!: () => void;
+            let operationEntered!: () => void;
+            const operationGate = new Promise<void>((resolve) => { releaseOperation = resolve; });
+            const operationLockEntered = new Promise<void>((resolve) => { operationEntered = resolve; });
+            const [testOwnerId] = readdirSync(join(homeDir, ".ccc", "devices", "owners"));
+            const operationKey = createHash("sha256").update("android-pixel-owned").digest("hex").slice(0, 32);
+            const operationLock = join(homeDir, ".ccc", "devices", "owners", testOwnerId, "android", "operations", `${operationKey}.lock`);
+            const operationHolder = withSharedMutationLockAsync(operationLock, async () => {
+                operationEntered();
+                await operationGate;
+            });
+            let execSettled = false;
+            let serializedExec: ReturnType<typeof client.callTool> | undefined;
+            const failures: unknown[] = [];
+            try {
+                await Promise.race([operationLockEntered, operationHolder]);
+                serializedExec = client.callTool({
+                    name: "exec",
+                    arguments: { deviceId: "android-pixel-owned", command: "echo serialized" },
+                }).then((result) => {
+                    execSettled = true;
+                    return result;
+                });
+                void serializedExec.catch(() => undefined);
+                await new Promise((resolve) => setTimeout(resolve, 50));
+                expect(execSettled).toBe(false);
+                const waitResult = await client.callTool({
+                    name: "wait_for_app",
+                    arguments: { deviceId: "android-pixel-owned", appId: "com.example.ready", timeoutMs: 5000, intervalMs: 50 },
+                });
+                // This checks read-only observation bypassing a held mutation lock, not
+                // native fixture process startup within an artificial 100ms deadline.
+                expect(waitResult.isError, JSON.stringify(waitResult.content)).not.toBe(true);
+                expect(parseToolJson(waitResult)).toMatchObject({ running: true, provider: "adb" });
+                expect(execSettled).toBe(false);
+            } catch (error) { failures.push(error); }
+            finally {
+                releaseOperation();
+                const joined = await Promise.allSettled([operationHolder, ...(serializedExec ? [serializedExec] : [])]);
+                for (const result of joined) if (result.status === "rejected" && !failures.includes(result.reason)) failures.push(result.reason);
+                if (serializedExec && joined[1].status === "fulfilled") {
+                    try { expect((await serializedExec).isError).not.toBe(true); }
+                    catch (error) { failures.push(error); }
+                }
+            }
+            if (failures.length === 1) throw failures[0];
+            if (failures.length > 1) throw new AggregateError(failures, "Mutation lock scenario failed before its owned joins");
+
+            const sessionStatus = await client.callTool({
+                name: "status",
+                arguments: { deviceId: "android-pixel-owned" },
+            });
+            expect(sessionStatus.isError).not.toBe(true);
+            expect(parseToolJson(sessionStatus)).toEqual(expect.objectContaining({
+                automation: expect.objectContaining({ deviceId: "android-pixel-owned", provider: "adb", lazy: true }),
+                device: expect.objectContaining({ deviceId: "android-pixel-owned", status: "running" }),
+
+            }));
+        });
+
+        it("routes pointer, keyboard, navigation and orientation controls through ADB", { timeout: TIMEOUT }, async () => {
+            const primitiveCalls: Array<[string, Record<string, unknown>, Record<string, unknown>]> = [
+                ["click", { deviceId: "android-pixel-owned", x: 10, y: 20 }, { provider: "adb", tapped: { x: 10, y: 20 } }],
+                ["click", { count: 2, deviceId: "android-pixel-owned", x: 11, y: 21 }, { provider: "adb", doubleTapped: { x: 11, y: 21 } }],
+                ["long_press", { deviceId: "android-pixel-owned", x: 12, y: 22, durationMs: 900 }, { provider: "adb", longPressed: { x: 12, y: 22, durationMs: 900 } }],
+                ["swipe", { deviceId: "android-pixel-owned", x1: 1, y1: 2, x2: 30, y2: 40, durationMs: 500 }, { provider: "adb", swiped: { x1: 1, y1: 2, x2: 30, y2: 40, durationMs: 500 } }],
+                ["drag", { deviceId: "android-pixel-owned", x1: 3, y1: 4, x2: 50, y2: 60, durationMs: 800 }, { provider: "adb", dragged: { x1: 3, y1: 4, x2: 50, y2: 60, durationMs: 800 } }],
+                ["type", { deviceId: "android-pixel-owned", text: "hello world" }, { provider: "adb", typed: true }],
+                ["key", { deviceId: "android-pixel-owned", keyCode: 82 }, { provider: "adb", key: 82 }],
+                ["home", { deviceId: "android-pixel-owned" }, { provider: "adb", home: true }],
+                ["back", { deviceId: "android-pixel-owned" }, { provider: "adb", back: true }],
+                ["forward", { deviceId: "android-pixel-owned" }, { provider: "adb", forward: true }],
+                ["recents", { deviceId: "android-pixel-owned" }, { provider: "adb", recents: true }],
+                ["power", { deviceId: "android-pixel-owned" }, { provider: "adb", power: true }],
+                ["lock", { deviceId: "android-pixel-owned" }, { provider: "adb", locked: true }],
+                ["unlock", { deviceId: "android-pixel-owned" }, { provider: "adb", unlocked: true }],
+                ["set_orientation", { deviceId: "android-pixel-owned", orientation: "landscape" }, { provider: "adb", orientation: "landscape", rotation: "1" }],
+                ["set_orientation", { orientation: "reverse-landscape", deviceId: "android-pixel-owned" }, { provider: "adb", orientation: "reverse-landscape", rotation: "3" }],
+            ] as const;
+            for (const [name, callArgs, expectedPayload] of primitiveCalls) {
+                const action = await client.callTool({ name, arguments: callArgs });
+                expect(action.isError, name).not.toBe(true);
+                expect(parseToolJson(action)).toEqual(expect.objectContaining(expectedPayload));
+            }
+            const logBeforeUnsupportedOrientation = readFileSync(logPath, "utf8");
+            const unsupportedOrientation = await client.callTool({ name: "set_orientation", arguments: { deviceId: "android-pixel-owned", orientation: "diagonal" } });
+            expect(unsupportedOrientation.isError).toBe(true);
+            expect((unsupportedOrientation.content as Array<{ text?: string }>)[0]?.text).toContain("orientation");
+            expect(readFileSync(logPath, "utf8")).toBe(logBeforeUnsupportedOrientation);
+            const log = readFileSync(logPath, "utf-8");
+            expect(log).toContain("adb -s emulator-5582 shell input tap 10 20");
+            expect(log).toContain("adb -s emulator-5582 shell input swipe 12 22 12 22 900");
+            expect(log).toContain("adb -s emulator-5582 shell input swipe 1 2 30 40 500");
+            expect(log).toContain("adb -s emulator-5582 shell input swipe 3 4 50 60 800");
+            expect(log).toContain("adb -s emulator-5582 shell input text hello%sworld");
+            expect(log).toContain("adb -s emulator-5582 shell input keyevent 82");
+            expect(log).toContain("adb -s emulator-5582 shell input keyevent 3");
+            expect(log).toContain("adb -s emulator-5582 shell input keyevent 4");
+            expect(log).toContain("adb -s emulator-5582 shell input keyevent 125");
+            expect(log).toContain("adb -s emulator-5582 shell input keyevent 187");
+            expect(log).toContain("adb -s emulator-5582 shell input keyevent 26");
+            expect(log).toContain("adb -s emulator-5582 shell input keyevent 223");
+            expect(log).toContain("adb -s emulator-5582 shell input keyevent 224");
+            expect(log).toContain("adb -s emulator-5582 shell settings put system accelerometer_rotation 0");
+            expect(log).toContain("adb -s emulator-5582 shell settings put system user_rotation 1");
+            expect(log).toContain("adb -s emulator-5582 shell settings put system user_rotation 3");
+        });
+
+        it("routes URL, permission, location, power, network and clipboard controls through ADB", { timeout: TIMEOUT }, async () => {
+            const primitiveCalls: Array<[string, Record<string, unknown>, Record<string, unknown>]> = [
+                ["open_url", { deviceId: "android-pixel-owned", url: "https://example.test/path" }, { provider: "adb", openedUrl: "https://example.test/path" }],
+                ["permission", { action: "grant", deviceId: "android-pixel-owned", appId: "com.example.mobile", permission: "android.permission.CAMERA" }, { provider: "adb", permission: { appId: "com.example.mobile", permission: "android.permission.CAMERA", action: "grant" } }],
+                ["permission", { action: "revoke", deviceId: "android-pixel-owned", appId: "com.example.mobile", permission: "android.permission.CAMERA" }, { provider: "adb", permission: { appId: "com.example.mobile", permission: "android.permission.CAMERA", action: "revoke" } }],
+                ["set_location", { deviceId: "android-pixel-owned", latitude: 37.7749, longitude: -122.4194, altitude: 10 }, { provider: "adb-emulator", location: { latitude: 37.7749, longitude: -122.4194, altitude: 10 } }],
+                ["set_battery", { deviceId: "android-pixel-owned", level: 42, charging: true, confirmDestructive: true }, { provider: "adb", battery: { level: 42, status: null, charging: true } }],
+                ["set_network", { deviceId: "android-pixel-owned", wifi: false, data: true, confirmDestructive: true }, { provider: "adb", network: { airplaneMode: null, wifi: false, data: true } }],
+                ["set_network", { deviceId: "android-pixel-owned", airplaneMode: true, confirmDestructive: true }, { provider: "adb", network: { airplaneMode: true, wifi: null, data: null } }],
+                ["clipboard", { deviceId: "android-pixel-owned", text: "clip text" }, { provider: "adb", clipboard: { set: true } }],
+                ["clipboard", { deviceId: "android-pixel-owned" }, { provider: "adb", text: "ok\n", status: 0 }],
+            ] as const;
+            for (const [name, callArgs, expectedPayload] of primitiveCalls) {
+                const action = await client.callTool({ name, arguments: callArgs });
+                expect(action.isError, name).not.toBe(true);
+                expect(parseToolJson(action)).toEqual(expect.objectContaining(expectedPayload));
+            }
+            const log = readFileSync(logPath, "utf-8");
+            expect(log).toContain("adb -s emulator-5582 shell am start -a android.intent.action.VIEW -d https://example.test/path");
+            expect(log).toContain("adb -s emulator-5582 shell pm grant com.example.mobile android.permission.CAMERA");
+            expect(log).toContain("adb -s emulator-5582 shell pm revoke com.example.mobile android.permission.CAMERA");
+            expect(log).toContain("adb -s emulator-5582 emu geo fix -122.4194 37.7749 10");
+            expect(log).toContain("adb -s emulator-5582 shell dumpsys battery set level 42");
+            expect(log).toContain("adb -s emulator-5582 shell dumpsys battery set ac 1");
+            expect(log).toContain("adb -s emulator-5582 shell svc wifi disable");
+            expect(log).toContain("adb -s emulator-5582 shell svc data enable");
+            expect(log).toContain("adb -s emulator-5582 shell cmd connectivity airplane-mode enable");
+            expect(log).toContain("adb -s emulator-5582 shell cmd clipboard set clip text");
+            expect(log).toContain("adb -s emulator-5582 shell cmd clipboard get");
+        });
+
+        it("observes text, apps and UI through the selected emulator", { timeout: TIMEOUT }, async () => {
+            const waitText = await client.callTool({
+                name: "wait_for_text",
+                arguments: { deviceId: "android-pixel-owned", text: "Hello", timeoutMs: 5000, intervalMs: 50 },
+            });
+            expect(waitText.isError).not.toBe(true);
+            const waitTextPayload = JSON.parse(((waitText.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+                found: boolean;
+                provider: string;
+            };
+            expect(waitTextPayload).toEqual(expect.objectContaining({ found: true, provider: "adb-uiautomator" }));
+
+            const waitApp = await client.callTool({
+                name: "wait_for_app",
+                arguments: { deviceId: "android-pixel-owned", appId: "com.example.mobile", timeoutMs: 5000, intervalMs: 50 },
+            });
+            expect(waitApp.isError).not.toBe(true);
+            const waitAppPayload = JSON.parse(((waitApp.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+                running: boolean;
+                provider: string;
+            };
+            expect(waitAppPayload).toEqual(expect.objectContaining({ running: true, provider: "adb" }));
+            const dumpUi = await client.callTool({
+                name: "ui",
+                arguments: { deviceId: "android-pixel-owned" },
+            });
+            expect(dumpUi.isError).not.toBe(true);
+            const dumpPayload = JSON.parse(((dumpUi.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+                provider: string;
+                source: string;
+                remotePath: string;
+            };
+            expect(dumpPayload.provider).toBe("adb-uiautomator");
+            expect(dumpPayload.source).toContain("<hierarchy>");
+            expect(dumpPayload.remotePath).toContain("android-pixel-owned");
+            const log = readFileSync(logPath, "utf-8");
+            expect(log).toContain("adb -s emulator-5582 shell pidof com.example.mobile");
+            expect(log).toContain("adb -s emulator-5582 shell uiautomator dump /sdcard/window-android-pixel-owned.xml");
+            expect(log).toContain("adb -s emulator-5582 exec-out cat /sdcard/window-android-pixel-owned.xml");
+        });
+
+        it("runs safe mobile flows and rejects lifecycle steps before execution", { timeout: TIMEOUT }, async () => {
+            const flow = await client.callTool({
+                name: "run_flow",
+                arguments: {
+                    steps: [
+                        { label: "tap primary", tool: "click", arguments: { deviceId: "android-pixel-owned", x: 15, y: 25, implicitBroker: false } },
+                        { label: "wait title", tool: "wait_for_text", arguments: { deviceId: "android-pixel-owned", text: "Hello", timeoutMs: 5000, intervalMs: 50, implicitBroker: false } },
+                        { label: "capture", tool: "screenshot", arguments: { deviceId: "android-pixel-owned", implicitBroker: false } },
+                    ],
+                },
+            });
+            expect(flow.isError).not.toBe(true);
+            const flowPayload = JSON.parse(((flow.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+                ok: boolean;
+                results: Array<{ label: string; isError: boolean; contentIndex?: number; contentCount?: number; content: Array<{ type: string; value?: { found?: boolean }; bytes?: number }> }>;
+            };
+            expect(flowPayload.ok).toBe(true);
+            expect(flowPayload.results.map((result) => result.label)).toEqual(["tap primary", "wait title", "capture"]);
+            expect(flowPayload.results[1].content[0].value?.found).toBe(true);
+            expect(flowPayload.results[2]).toMatchObject({ contentIndex: 1, contentCount: 1 });
+            const captured = (flow.content as Array<{ type: string; data?: string }>)[flowPayload.results[2].contentIndex!];
+            expect(captured.type).toBe("image");
+            expect(Buffer.from(captured.data!, "base64").subarray(1, 4).toString()).toBe("PNG");
+
+            const disallowedFlow = await client.callTool({
+                name: "run_flow",
+                arguments: {
+                    steps: [
+                        { tool: "start", arguments: { deviceId: "android-pixel-owned" } },
+                        { tool: "back", arguments: { deviceId: "android-pixel-owned" } },
+                    ],
+                },
+            });
+            expect(disallowedFlow.isError).toBe(true);
+            const disallowedPayload = JSON.parse(((disallowedFlow.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+                ok: boolean;
+                stoppedAt: number;
+                results: Array<{ error: string }>;
+            };
+            expect(disallowedPayload.ok).toBe(false);
+            expect(disallowedPayload.stoppedAt).toBe(0);
+            expect(disallowedPayload.results[0].error).toContain("does not allow step tool: start");
+
+            const deviceFlow = await client.callTool({
+                name: "run_flow",
+                arguments: {
+                    steps: [
+                        { label: "status", tool: "status", arguments: { deviceId: "android-pixel-owned", implicitBroker: false } },
+                        { label: "wait title", tool: "wait_for_text", arguments: { deviceId: "android-pixel-owned", text: "Hello", timeoutMs: 5000, intervalMs: 50, implicitBroker: false } },
+                        { label: "capture", tool: "screenshot", arguments: { deviceId: "android-pixel-owned", implicitBroker: false } },
+                    ],
+                },
+            });
+            expect(deviceFlow.isError).not.toBe(true);
+            const deviceFlowPayload = JSON.parse(((deviceFlow.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+                ok: boolean;
+                results: Array<{ label: string; isError: boolean; contentIndex?: number; contentCount?: number; content: Array<{ type: string; value?: { device?: { deviceId?: string }; found?: boolean }; bytes?: number }> }>;
+            };
+            expect(deviceFlowPayload.ok).toBe(true);
+            expect(deviceFlowPayload.results.map((result) => result.label)).toEqual(["status", "wait title", "capture"]);
+            expect(deviceFlowPayload.results[0].content[0].value?.device?.deviceId).toBe("android-pixel-owned");
+            expect(deviceFlowPayload.results[1].content[0].value?.found).toBe(true);
+            expect(deviceFlowPayload.results[2]).toMatchObject({ contentIndex: 1, contentCount: 1 });
+            expect((deviceFlow.content as Array<{ type: string }>)[deviceFlowPayload.results[2].contentIndex!].type).toBe("image");
+
+            const unsafeDeviceFlow = await client.callTool({
+                name: "run_flow",
+                arguments: {
+                    steps: [
+                        { tool: "delete", arguments: { deviceId: "android-pixel-owned", confirmDestructive: true } },
+                        { tool: "back", arguments: { deviceId: "android-pixel-owned" } },
+                    ],
+                },
+            });
+            expect(unsafeDeviceFlow.isError).toBe(true);
+            const unsafeDeviceFlowPayload = JSON.parse(((unsafeDeviceFlow.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+                ok: boolean;
+                stoppedAt: number;
+                results: Array<{ error: string }>;
+            };
+            expect(unsafeDeviceFlowPayload.ok).toBe(false);
+            expect(unsafeDeviceFlowPayload.stoppedAt).toBe(0);
+            expect(unsafeDeviceFlowPayload.results[0].error).toContain("device_run_flow does not allow step tool: delete");
+            const log = readFileSync(logPath, "utf-8");
+            expect(log).toContain("adb -s emulator-5582 shell input tap 15 25");
+        });
+
+        it("returns binary screenshots including large and nonzero-exit PNG captures", { timeout: TIMEOUT }, async () => {
+            const screenshot = await client.callTool({
+                name: "screenshot",
+                arguments: { deviceId: "android-pixel-owned" },
+            });
+            expect(screenshot.isError).not.toBe(true);
+            const expectedAndroidPng = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, ...Buffer.from("FAKEPNG")]).toString("base64");
+            expect((screenshot.content as Array<{ type: string; data: string; mimeType: string }>)[0]).toEqual({
+                type: "image",
+                data: expectedAndroidPng,
+                mimeType: "image/png",
+            });
+
+            const largeScreencapMarker = join(homeDir, "fake-screencap-large");
+            writeFileSync(largeScreencapMarker, "1");
+            try {
+                const largeScreenshot = await client.callTool({
+                    name: "screenshot",
+                    arguments: { deviceId: "android-pixel-owned" },
+                });
+                expect(largeScreenshot.isError).not.toBe(true);
+                const image = (largeScreenshot.content as Array<{ type: string; data: string; mimeType: string }>)[0];
+                expect(image.type).toBe("image");
+                expect(Buffer.from(image.data, "base64").length).toBeGreaterThan(2 * 1024 * 1024);
+            } finally {
+                rmSync(largeScreencapMarker, { force: true });
+            }
+
+            const flakyScreencapMarker = join(homeDir, "fake-screencap-exit-1");
+            writeFileSync(flakyScreencapMarker, "1");
+            try {
+                const flakyScreenshot = await client.callTool({
+                    name: "screenshot",
+                    arguments: { deviceId: "android-pixel-owned" },
+                });
+                expect(flakyScreenshot.isError).not.toBe(true);
+                expect((flakyScreenshot.content as Array<{ type: string; mimeType?: string; data?: string }>)[0]).toEqual(expect.objectContaining({
+                    type: "image",
+                    mimeType: "image/png",
+                    data: expectedAndroidPng,
+                }));
+            } finally {
+                rmSync(flakyScreencapMarker, { force: true });
+            }
+            const log = readFileSync(logPath, "utf-8");
+            expect(log).toContain("adb -s emulator-5582 exec-out screencap -p");
+        });
+
+        it("records video with status, duplicate-start protection, finalization and startup failure recovery", { timeout: TIMEOUT }, async () => {
+            const initialRecordStatus = await client.callTool({
+                name: "record_video",
+                arguments: { action: "status", deviceId: "android-pixel-owned" },
+            });
+            expect(initialRecordStatus.isError).not.toBe(true);
+            const initialRecordPayload = JSON.parse(((initialRecordStatus.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+                recording: unknown;
+                provider: string;
+            };
+            expect(initialRecordPayload.recording).toBeNull();
+            expect(initialRecordPayload.provider).toBe("adb-screenrecord");
+
+            const stopWithoutRecording = await client.callTool({
+                name: "record_video",
+                arguments: { action: "stop", deviceId: "android-pixel-owned" },
+            });
+            expect(stopWithoutRecording.isError).toBe(true);
+            expect((stopWithoutRecording.content as Array<{ text?: string }>)[0].text).toContain("No Android recording active");
+
+            const recordStart = await client.callTool({
+                name: "record_video",
+                arguments: { action: "start",
+                    deviceId: "android-pixel-owned",
+                    remotePath: "/sdcard/custom-android-recording.mp4",
+                    localPath: join(homeDir, "custom-android-recording.mp4"),
+                    timeLimitSec: 5,
+                },
+            });
+            rememberCurrentRuntimes();
+            expect(recordStart.isError).not.toBe(true);
+            await expect.poll(() => readFileSync(logPath, "utf8")).toContain("adb -s emulator-5582 shell screenrecord --time-limit 5 /sdcard/custom-android-recording.mp4");
+            const recordStartPayload = JSON.parse(((recordStart.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+                recording: { active: boolean; provider: string; runtimeId: string; processIdentity: { pid: number; startToken: string; commandHash: string }; remotePath: string; localPath: string; timeLimitSec: number };
+            };
+            expect(recordStartPayload.recording).toEqual(expect.objectContaining({
+                active: true,
+                provider: "adb-screenrecord",
+                runtimeId: expect.any(String),
+                processIdentity: expect.objectContaining({
+                    pid: expect.any(Number),
+                    startToken: expect.any(String),
+                    commandHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+                }),
+                remotePath: "/sdcard/custom-android-recording.mp4",
+                localPath: join(homeDir, "custom-android-recording.mp4"),
+                timeLimitSec: 5,
+            }));
+
+            const duplicateRecordStart = await client.callTool({
+                name: "record_video",
+                arguments: { action: "start", deviceId: "android-pixel-owned" },
+            });
+            expect(duplicateRecordStart.isError).toBe(true);
+            expect((duplicateRecordStart.content as Array<{ text?: string }>)[0].text).toContain("Android recording already active");
+
+            const activeRecordStatus = await client.callTool({
+                name: "record_video",
+                arguments: { action: "status", deviceId: "android-pixel-owned" },
+            });
+            const activeRecordPayload = JSON.parse(((activeRecordStatus.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+                recording: { active: boolean; provider: string };
+            };
+            expect(activeRecordPayload.recording).toEqual(expect.objectContaining({ active: true, provider: "adb-screenrecord" }));
+
+            const recordStop = await client.callTool({
+                name: "record_video",
+                arguments: { action: "stop", deviceId: "android-pixel-owned" },
+            });
+            expect(recordStop.isError).not.toBe(true);
+            const recordStopPayload = JSON.parse(((recordStop.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+                stopped: boolean;
+                provider: string;
+                recording: { active: boolean; provider: string; remotePath: string; localPath: string; timeLimitSec: number };
+                device: { recording: unknown };
+            };
+            expect(recordStopPayload.stopped).toBe(true);
+            expect(recordStopPayload.provider).toBe("adb-screenrecord");
+            expect(recordStopPayload.recording).toEqual(expect.objectContaining({
+                active: false,
+                provider: "adb-screenrecord",
+                remotePath: "/sdcard/custom-android-recording.mp4",
+                localPath: join(homeDir, "custom-android-recording.mp4"),
+                timeLimitSec: 5,
+            }));
+            expect(recordStopPayload.device.recording).toBeNull();
+
+            const finalRecordStatus = await client.callTool({
+                name: "record_video",
+                arguments: { action: "status", deviceId: "android-pixel-owned" },
+            });
+            expect(JSON.parse(((finalRecordStatus.content as Array<{ text?: string }>)[0].text ?? "{}"))).toEqual(expect.objectContaining({
+                recording: null,
+                provider: "adb-screenrecord",
+            }));
+
+            const failedRecordStart = await client.callTool({
+                name: "record_video",
+                arguments: { action: "start",
+                    deviceId: "android-pixel-owned",
+                    remotePath: "/sdcard/fail-immediate-recording.mp4",
+                    localPath: join(homeDir, "fail-immediate-android-recording.mp4"),
+                    timeLimitSec: 5,
+                },
+            });
+            expect(failedRecordStart.isError).toBe(true);
+            expect((failedRecordStart.content as Array<{ text?: string }>)[0].text).toContain("recorder exited before it was ready");
+            const statusAfterFailedStart = await client.callTool({
+                name: "record_video",
+                arguments: { action: "status", deviceId: "android-pixel-owned" },
+            });
+            expect(JSON.parse(((statusAfterFailedStart.content as Array<{ text?: string }>)[0].text ?? "{}")).recording).toBeNull();
+            const log = readFileSync(logPath, "utf-8");
+            expect(log).toContain("adb -s emulator-5582 shell screenrecord --time-limit 5 /sdcard/custom-android-recording.mp4");
+            expect(log).toContain("adb -s emulator-5582 shell pkill -2 screenrecord");
+            expect(log).toMatch(/adb -s emulator-5582 pull \/sdcard\/custom-android-recording\.mp4 [^\r\n]*ccc-device-download-[^\\/\r\n]+[\\/]payload/);
+            expect(log).toContain("adb -s emulator-5582 shell rm -f /sdcard/custom-android-recording.mp4");
+            expect(log).toContain("adb -s emulator-5582 shell screenrecord --time-limit 5 /sdcard/fail-immediate-recording.mp4");
+        });
+
+        it("reconciles a naturally ended recording before finalizing its retained media", { timeout: TIMEOUT }, async () => {
+            const naturalExitRelease = join(homeDir, "fake-adb-release-natural-recording");
+            try {
+                const naturalExitStart = await client.callTool({
+                    name: "record_video",
+                    arguments: { action: "start",
+                        deviceId: "android-pixel-owned",
+                        remotePath: "/sdcard/natural-exit-recording.mp4",
+                        localPath: join(homeDir, "natural-exit-android-recording.mp4"),
+                        timeLimitSec: 5,
+                    },
+                });
+                rememberCurrentRuntimes();
+                expect(naturalExitStart.isError, JSON.stringify(naturalExitStart.content)).not.toBe(true);
+                expect(parseToolJson(naturalExitStart)).toMatchObject({ recording: { active: true } });
+            } finally {
+                // Keep the real child alive through Windows identity capture, then let
+                // it exit normally. Release even if a start assertion fails.
+                writeFileSync(naturalExitRelease, "release");
+            }
+            await expect.poll(async () => {
+                const status = await client.callTool({
+                    name: "record_video",
+                    arguments: { action: "status", deviceId: "android-pixel-owned" },
+                });
+                expect(status.isError, JSON.stringify(status.content)).not.toBe(true);
+                return parseToolJson(status).recording;
+            }, { timeout: 15000, interval: 100 }).toMatchObject({
+                active: false,
+                remotePath: "/sdcard/natural-exit-recording.mp4",
+            });
+            const naturalExitStop = await client.callTool({
+                name: "record_video",
+                arguments: { action: "stop", deviceId: "android-pixel-owned" },
+            });
+            expect(naturalExitStop.isError).not.toBe(true);
+            const log = readFileSync(logPath, "utf-8");
+            expect(log).toContain("adb -s emulator-5582 shell screenrecord --time-limit 5 /sdcard/natural-exit-recording.mp4");
+        });
+
+        it("preserves a destination after recording transfer failure and finalizes on retry", { timeout: TIMEOUT }, async () => {
+            const retryDestination = join(homeDir, "fail-once-pull-android-recording.mp4");
+            writeFileSync(retryDestination, "original");
+            const pullFailStart = await client.callTool({
+                name: "record_video",
+                arguments: { action: "start",
+                    deviceId: "android-pixel-owned",
+                    remotePath: "/sdcard/fail-once-pull-recording.mp4",
+                    localPath: retryDestination,
+                    timeLimitSec: 5,
+                },
+            });
+            rememberCurrentRuntimes();
+            expect(pullFailStart.isError).not.toBe(true);
+            await expect.poll(() => readFileSync(logPath, "utf8")).toContain("adb -s emulator-5582 shell screenrecord --time-limit 5 /sdcard/fail-once-pull-recording.mp4");
+            const pullFailStop = await client.callTool({
+                name: "record_video",
+                arguments: { action: "stop", deviceId: "android-pixel-owned" },
+            });
+            expect(pullFailStop.isError).toBe(true);
+            expect((pullFailStop.content as Array<{ text?: string }>)[0].text).toContain("Android recording remains pending finalization");
+            expect(readFileSync(retryDestination, "utf8")).toBe("original");
+            const statusAfterPullFailure = await client.callTool({
+                name: "record_video",
+                arguments: { action: "status", deviceId: "android-pixel-owned" },
+            });
+            expect(JSON.parse(((statusAfterPullFailure.content as Array<{ text?: string }>)[0].text ?? "{}")).recording).toEqual(expect.objectContaining({
+                active: false,
                 remotePath: "/sdcard/fail-once-pull-recording.mp4",
-                localPath: retryDestination,
-                timeLimitSec: 5,
-            },
+            }));
+            const pullRetryStop = await client.callTool({
+                name: "record_video",
+                arguments: { action: "stop", deviceId: "android-pixel-owned" },
+            });
+            expect(pullRetryStop.isError).not.toBe(true);
+            expect(readFileSync(retryDestination, "utf8")).toBe("downloaded");
+            const statusAfterPullRetry = await client.callTool({
+                name: "record_video",
+                arguments: { action: "status", deviceId: "android-pixel-owned" },
+            });
+            expect(JSON.parse(((statusAfterPullRetry.content as Array<{ text?: string }>)[0].text ?? "{}")).recording).toBeNull();
+            const log = readFileSync(logPath, "utf-8");
+            expect(log.match(/adb -s emulator-5582 pull \/sdcard\/fail-once-pull-recording\.mp4 [^\r\n]*ccc-device-download-[^\\/\r\n]+[\\/]payload/g)).toHaveLength(2);
         });
-        expect(pullFailStart.isError).not.toBe(true);
-        await expect.poll(() => readFileSync(logPath, "utf8")).toContain("adb -s emulator-5582 shell screenrecord --time-limit 5 /sdcard/fail-once-pull-recording.mp4");
-        const pullFailStop = await client.callTool({
-            name: "record_video",
-            arguments: { action: "stop", deviceId: "android-pixel-owned" },
-        });
-        expect(pullFailStop.isError).toBe(true);
-        expect((pullFailStop.content as Array<{ text?: string }>)[0].text).toContain("Android recording remains pending finalization");
-        expect(readFileSync(retryDestination, "utf8")).toBe("original");
-        const statusAfterPullFailure = await client.callTool({
-            name: "record_video",
-            arguments: { action: "status", deviceId: "android-pixel-owned" },
-        });
-        expect(JSON.parse(((statusAfterPullFailure.content as Array<{ text?: string }>)[0].text ?? "{}")).recording).toEqual(expect.objectContaining({
-            active: false,
-            remotePath: "/sdcard/fail-once-pull-recording.mp4",
-        }));
-        const pullRetryStop = await client.callTool({
-            name: "record_video",
-            arguments: { action: "stop", deviceId: "android-pixel-owned" },
-        });
-        expect(pullRetryStop.isError).not.toBe(true);
-        expect(readFileSync(retryDestination, "utf8")).toBe("downloaded");
-        const statusAfterPullRetry = await client.callTool({
-            name: "record_video",
-            arguments: { action: "status", deviceId: "android-pixel-owned" },
-        });
-        expect(JSON.parse(((statusAfterPullRetry.content as Array<{ text?: string }>)[0].text ?? "{}")).recording).toBeNull();
 
-        const stopCleanupRecordStart = await client.callTool({
-            name: "record_video",
-            arguments: { action: "start",
-                deviceId: "android-pixel-owned",
-                remotePath: "/sdcard/stop-cleanup-recording.mp4",
-                localPath: join(homeDir, "stop-cleanup-android-recording.mp4"),
-                timeLimitSec: 5,
-            },
-        });
-        expect(stopCleanupRecordStart.isError).not.toBe(true);
-        await expect.poll(() => readFileSync(logPath, "utf8")).toContain("adb -s emulator-5582 shell screenrecord --time-limit 5 /sdcard/stop-cleanup-recording.mp4");
+        it("stages file transfers and rejects unsafe paths without changing native state", { timeout: TIMEOUT }, async () => {
+            const localUploadPath = join(homeDir, "android-local.txt");
+            const localDownloadPath = join(homeDir, "android-remote.txt");
+            writeFileSync(localUploadPath, "android local");
+            const fileAndAppCalls: Array<[string, Record<string, unknown>, Record<string, unknown>]> = [
+                ["upload", { deviceId: "android-pixel-owned", localPath: localUploadPath, remotePath: "/sdcard/local.txt" }, { provider: "adb", uploaded: { localPath: localUploadPath, remotePath: "/sdcard/local.txt" } }],
+                ["download", { deviceId: "android-pixel-owned", remotePath: "/sdcard/remote.txt", localPath: localDownloadPath }, { provider: "adb", downloaded: { remotePath: "/sdcard/remote.txt", localPath: localDownloadPath } }],
+            ] as const;
+            for (const [name, callArgs, expectedPayload] of fileAndAppCalls) {
+                const action = await client.callTool({ name, arguments: callArgs });
+                expect(action.isError).not.toBe(true);
+                expect(parseToolJson(action)).toEqual(expect.objectContaining(expectedPayload));
+            }
 
-        const dumpUi = await client.callTool({
-            name: "ui",
-            arguments: { deviceId: "android-pixel-owned" },
-        });
-        expect(dumpUi.isError).not.toBe(true);
-        const dumpPayload = JSON.parse(((dumpUi.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
-            provider: string;
-            source: string;
-            remotePath: string;
-        };
-        expect(dumpPayload.provider).toBe("adb-uiautomator");
-        expect(dumpPayload.source).toContain("<hierarchy>");
-        expect(dumpPayload.remotePath).toContain("android-pixel-owned");
+            const logBeforeRejectedRemoteTransfer = readFileSync(logPath, "utf-8");
+            const rejectedRemoteUpload = await client.callTool({
+                name: "upload",
+                arguments: { deviceId: "android-pixel-owned", localPath: localUploadPath, remotePath: "/sdcard/../escape.txt" },
+            });
+            expect(rejectedRemoteUpload.isError).toBe(true);
+            expect((rejectedRemoteUpload.content as Array<{ text?: string }>)[0].text).toContain("upload-remote-path-traversal-rejected");
+            const rejectedRemoteDownload = await client.callTool({
+                name: "download",
+                arguments: { deviceId: "android-pixel-owned", remotePath: "relative.txt", localPath: localDownloadPath },
+            });
+            expect(rejectedRemoteDownload.isError).toBe(true);
+            expect((rejectedRemoteDownload.content as Array<{ text?: string }>)[0].text).toContain("download-remote-path-not-absolute");
+            expect(readFileSync(logPath, "utf-8")).toBe(logBeforeRejectedRemoteTransfer);
 
-        const localUploadPath = join(homeDir, "android-local.txt");
-        const localDownloadPath = join(homeDir, "android-remote.txt");
-        writeFileSync(localUploadPath, "android local");
-        const fileAndAppCalls: Array<[string, Record<string, unknown>, Record<string, unknown>]> = [
-            ["upload", { deviceId: "android-pixel-owned", localPath: localUploadPath, remotePath: "/sdcard/local.txt" }, { provider: "adb", uploaded: { localPath: localUploadPath, remotePath: "/sdcard/local.txt" } }],
-            ["download", { deviceId: "android-pixel-owned", remotePath: "/sdcard/remote.txt", localPath: localDownloadPath }, { provider: "adb", downloaded: { remotePath: "/sdcard/remote.txt", localPath: localDownloadPath } }],
-            ["install_app", { deviceId: "android-pixel-owned", path: "/tmp/Test.apk" }, { provider: "adb", installed: "/tmp/Test.apk" }],
-            ["launch_app", { deviceId: "android-pixel-owned", appId: "com.example.test" }, { provider: "adb", launched: "com.example.test" }],
-            ["launch_app", { deviceId: "android-pixel-owned", component: "com.example.test/.MainActivity" }, { provider: "adb", launched: "com.example.test/.MainActivity" }],
-            ["clear_app_data", { deviceId: "android-pixel-owned", appId: "com.example.test", confirmDestructive: true }, { provider: "adb", reset: { appId: "com.example.test" } }],
-            ["install_app", { deviceId: "android-pixel-owned", path: "/tmp/Mobile.apk" }, { provider: "adb", installed: "/tmp/Mobile.apk" }],
-            ["launch_app", { deviceId: "android-pixel-owned", appId: "com.example.mobile" }, { provider: "adb", launched: "com.example.mobile" }],
-            ["uninstall_app", { deviceId: "android-pixel-owned", appId: "com.example.mobile", confirmDestructive: true }, { provider: "adb", uninstalled: "com.example.mobile" }],
-            ["stop_app", { deviceId: "android-pixel-owned", appId: "com.example.mobile" }, { provider: "adb", stopped: "com.example.mobile" }],
-            ["clear_app_data", { deviceId: "android-pixel-owned", appId: "com.example.mobile", confirmDestructive: true }, { provider: "adb", reset: { appId: "com.example.mobile" } }],
-        ] as const;
-        for (const [name, callArgs, expectedPayload] of fileAndAppCalls) {
-            const action = await client.callTool({ name, arguments: callArgs });
-            expect(action.isError).not.toBe(true);
-            expect(parseToolJson(action)).toEqual(expect.objectContaining(expectedPayload));
-        }
+            const preservedDownloadPath = join(homeDir, "preserved-download.txt");
+            writeFileSync(preservedDownloadPath, "original");
+            const failedDownload = await client.callTool({
+                name: "download",
+                arguments: { deviceId: "android-pixel-owned", remotePath: "/sdcard/fail-pull.txt", localPath: preservedDownloadPath },
+            });
+            expect(failedDownload.isError).toBe(true);
+            expect(readFileSync(preservedDownloadPath, "utf-8")).toBe("original");
+            const failedDownloadStage = readFileSync(logPath, "utf-8").match(/adb -s emulator-5582 pull \/sdcard\/fail-pull\.txt (.+)/)?.[1];
+            if (!failedDownloadStage) throw new Error("Failed download did not reach its allocated ADB stage");
+            expect(existsSync(dirname(failedDownloadStage))).toBe(false);
 
-        const logBeforeRejectedRemoteTransfer = readFileSync(logPath, "utf-8");
-        const rejectedRemoteUpload = await client.callTool({
-            name: "upload",
-            arguments: { deviceId: "android-pixel-owned", localPath: localUploadPath, remotePath: "/sdcard/../escape.txt" },
-        });
-        expect(rejectedRemoteUpload.isError).toBe(true);
-        expect((rejectedRemoteUpload.content as Array<{ text?: string }>)[0].text).toContain("upload-remote-path-traversal-rejected");
-        const rejectedRemoteDownload = await client.callTool({
-            name: "download",
-            arguments: { deviceId: "android-pixel-owned", remotePath: "relative.txt", localPath: localDownloadPath },
-        });
-        expect(rejectedRemoteDownload.isError).toBe(true);
-        expect((rejectedRemoteDownload.content as Array<{ text?: string }>)[0].text).toContain("download-remote-path-not-absolute");
-        expect(readFileSync(logPath, "utf-8")).toBe(logBeforeRejectedRemoteTransfer);
+            const failedUpload = await client.callTool({
+                name: "upload",
+                arguments: { deviceId: "android-pixel-owned", localPath: localUploadPath, remotePath: "/sdcard/fail-push.txt" },
+            });
+            expect(failedUpload.isError).toBe(true);
+            const failedUploadStage = readFileSync(logPath, "utf-8").match(/adb -s emulator-5582 push (.+) \/sdcard\/fail-push\.txt/)?.[1];
+            if (!failedUploadStage) throw new Error("Failed upload did not reach its allocated ADB stage");
+            expect(existsSync(dirname(failedUploadStage))).toBe(false);
 
-        const preservedDownloadPath = join(homeDir, "preserved-download.txt");
-        writeFileSync(preservedDownloadPath, "original");
-        const failedDownload = await client.callTool({
-            name: "download",
-            arguments: { deviceId: "android-pixel-owned", remotePath: "/sdcard/fail-pull.txt", localPath: preservedDownloadPath },
+            const secretUploadPath = join(homeDir, ".env");
+            writeFileSync(secretUploadPath, "TOKEN=secret");
+            const rejectedSecretUpload = await client.callTool({
+                name: "upload",
+                arguments: { deviceId: "android-pixel-owned", localPath: secretUploadPath, remotePath: "/sdcard/.env" },
+            });
+            expect(rejectedSecretUpload.isError).toBe(true);
+            expect((rejectedSecretUpload.content as Array<{ text?: string }>)[0].text).toContain("upload-local-path-secret-looking-file");
+            const log = readFileSync(logPath, "utf-8");
+            const uploadStagePath = log.match(/adb -s emulator-5582 push ([^\r\n]*ccc-device-upload-[^\\/\r\n]+[\\/]payload) \/sdcard\/local\.txt/)?.[1];
+            const downloadStagePath = log.match(/adb -s emulator-5582 pull \/sdcard\/remote\.txt ([^\r\n]*ccc-device-download-[^\\/\r\n]+[\\/]payload)/)?.[1];
+            const failedUploadStagePath = log.match(/adb -s emulator-5582 push ([^\r\n]*ccc-device-upload-[^\\/\r\n]+[\\/]payload) \/sdcard\/fail-push\.txt/)?.[1];
+            expect(uploadStagePath).toBeTruthy();
+            expect(downloadStagePath).toBeTruthy();
+            expect(failedUploadStagePath).toBeTruthy();
+            expect(existsSync(uploadStagePath || "")).toBe(false);
+            expect(existsSync(downloadStagePath || "")).toBe(false);
+            expect(existsSync(failedUploadStagePath || "")).toBe(false);
         });
-        expect(failedDownload.isError).toBe(true);
-        expect(readFileSync(preservedDownloadPath, "utf-8")).toBe("original");
-        const failedDownloadStage = readFileSync(logPath, "utf-8").match(/adb -s emulator-5582 pull \/sdcard\/fail-pull\.txt (.+)/)?.[1];
-        if (!failedDownloadStage) throw new Error("Failed download did not reach its allocated ADB stage");
-        expect(existsSync(dirname(failedDownloadStage))).toBe(false);
 
-        const failedUpload = await client.callTool({
-            name: "upload",
-            arguments: { deviceId: "android-pixel-owned", localPath: localUploadPath, remotePath: "/sdcard/fail-push.txt" },
+        it("routes app installation, launch, reset, uninstall and stop through ADB", { timeout: TIMEOUT }, async () => {
+            const fileAndAppCalls: Array<[string, Record<string, unknown>, Record<string, unknown>]> = [
+                ["install_app", { deviceId: "android-pixel-owned", path: "/tmp/Test.apk" }, { provider: "adb", installed: "/tmp/Test.apk" }],
+                ["launch_app", { deviceId: "android-pixel-owned", appId: "com.example.test" }, { provider: "adb", launched: "com.example.test" }],
+                ["launch_app", { deviceId: "android-pixel-owned", component: "com.example.test/.MainActivity" }, { provider: "adb", launched: "com.example.test/.MainActivity" }],
+                ["clear_app_data", { deviceId: "android-pixel-owned", appId: "com.example.test", confirmDestructive: true }, { provider: "adb", reset: { appId: "com.example.test" } }],
+                ["install_app", { deviceId: "android-pixel-owned", path: "/tmp/Mobile.apk" }, { provider: "adb", installed: "/tmp/Mobile.apk" }],
+                ["launch_app", { deviceId: "android-pixel-owned", appId: "com.example.mobile" }, { provider: "adb", launched: "com.example.mobile" }],
+                ["uninstall_app", { deviceId: "android-pixel-owned", appId: "com.example.mobile", confirmDestructive: true }, { provider: "adb", uninstalled: "com.example.mobile" }],
+                ["stop_app", { deviceId: "android-pixel-owned", appId: "com.example.mobile" }, { provider: "adb", stopped: "com.example.mobile" }],
+                ["clear_app_data", { deviceId: "android-pixel-owned", appId: "com.example.mobile", confirmDestructive: true }, { provider: "adb", reset: { appId: "com.example.mobile" } }],
+            ] as const;
+            for (const [name, callArgs, expectedPayload] of fileAndAppCalls) {
+                const action = await client.callTool({ name, arguments: callArgs });
+                expect(action.isError).not.toBe(true);
+                expect(parseToolJson(action)).toEqual(expect.objectContaining(expectedPayload));
+            }
+            const log = readFileSync(logPath, "utf-8");
+            expect(log).toContain("adb -s emulator-5582 install -r /tmp/Test.apk");
+            expect(log).toContain("adb -s emulator-5582 shell monkey -p com.example.test 1");
+            expect(log).toContain("adb -s emulator-5582 shell am start -n com.example.test/.MainActivity");
+            expect(log).toContain("adb -s emulator-5582 shell pm clear com.example.test");
+            expect(log).toContain("adb -s emulator-5582 install -r /tmp/Mobile.apk");
+            expect(log).toContain("adb -s emulator-5582 shell monkey -p com.example.mobile 1");
+            expect(log).toContain("adb -s emulator-5582 uninstall com.example.mobile");
+            expect(log).toContain("adb -s emulator-5582 shell am force-stop com.example.mobile");
+            expect(log).toContain("adb -s emulator-5582 shell pm clear com.example.mobile");
         });
-        expect(failedUpload.isError).toBe(true);
-        const failedUploadStage = readFileSync(logPath, "utf-8").match(/adb -s emulator-5582 push (.+) \/sdcard\/fail-push\.txt/)?.[1];
-        if (!failedUploadStage) throw new Error("Failed upload did not reach its allocated ADB stage");
-        expect(existsSync(dirname(failedUploadStage))).toBe(false);
 
-        const secretUploadPath = join(homeDir, ".env");
-        writeFileSync(secretUploadPath, "TOKEN=secret");
-        const rejectedSecretUpload = await client.callTool({
-            name: "upload",
-            arguments: { deviceId: "android-pixel-owned", localPath: secretUploadPath, remotePath: "/sdcard/.env" },
-        });
-        expect(rejectedSecretUpload.isError).toBe(true);
-        expect((rejectedSecretUpload.content as Array<{ text?: string }>)[0].text).toContain("upload-local-path-secret-looking-file");
-
-        const deleteWhileRunning = await client.callTool({
-            name: "delete",
-            arguments: { deviceId: "android-pixel-owned", deleteAvd: true, confirmDestructive: true },
-        });
-        expect(deleteWhileRunning.isError).toBe(true);
-
-        const stop = await client.callTool({
-            name: "stop",
-            arguments: { deviceId: "android-pixel-owned" },
-        });
-        expect(stop.isError, JSON.stringify(stop)).not.toBe(true);
-        const stoppedPayload = JSON.parse(((stop.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
-            device: { recording: unknown; status: string };
-        };
-        expect(stoppedPayload.device.status).toBe("stopped");
-        expect(stoppedPayload.device.recording).toBeNull();
-
-        const statusAfterDeviceStop = await client.callTool({
-            name: "record_video",
-            arguments: { action: "status", deviceId: "android-pixel-owned" },
-        });
-        expect(JSON.parse(((statusAfterDeviceStop.content as Array<{ text?: string }>)[0].text ?? "{}")).recording).toBeNull();
-
-        const deleted = await client.callTool({
-            name: "delete",
-            arguments: { deviceId: "android-pixel-owned", deleteAvd: true, confirmDestructive: true },
-        });
-        expect(deleted.isError).not.toBe(true);
-        const deletedPayload = JSON.parse(((deleted.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
-            deleted: string;
-            avdDeleted: boolean;
-        };
-        expect(deletedPayload).toEqual({ deleted: "android-pixel-owned", avdDeleted: true });
-        expect(existsSync(avdDataPath)).toBe(false);
-        expect(existsSync(avdIniPath)).toBe(false);
-
-        const log = readFileSync(logPath, "utf-8");
-        expect(log).toContain(`avdmanager create avd --name ${avdName} --package system-images;android-35;google_apis;x86_64 --force --device pixel_6`);
-        expect(log).toContain(`emulator -avd ${avdName} -port 5582 -no-window -no-audio -netsim-args --no-cli-ui --no-web-ui`);
-        expect(log).toContain("adb -s emulator-5582 shell getprop sys.boot_completed");
-        expect(log).toContain("adb -s emulator-5582 shell input tap 10 20");
-        expect(log).toContain("adb -s emulator-5582 shell input swipe 12 22 12 22 900");
-        expect(log).toContain("adb -s emulator-5582 shell input swipe 1 2 30 40 500");
-        expect(log).toContain("adb -s emulator-5582 shell input swipe 3 4 50 60 800");
-        expect(log).toContain("adb -s emulator-5582 shell input text hello%sworld");
-        expect(log).toContain("adb -s emulator-5582 shell input keyevent 82");
-        expect(log).toContain("adb -s emulator-5582 shell input keyevent 3");
-        expect(log).toContain("adb -s emulator-5582 shell input keyevent 4");
-        expect(log).toContain("adb -s emulator-5582 shell input keyevent 125");
-        expect(log).toContain("adb -s emulator-5582 shell input keyevent 187");
-        expect(log).toContain("adb -s emulator-5582 shell input keyevent 26");
-        expect(log).toContain("adb -s emulator-5582 shell input keyevent 223");
-        expect(log).toContain("adb -s emulator-5582 shell input keyevent 224");
-        expect(log).toContain("adb -s emulator-5582 shell settings put system accelerometer_rotation 0");
-        expect(log).toContain("adb -s emulator-5582 shell settings put system user_rotation 1");
-        expect(log).toContain("adb -s emulator-5582 shell settings put system user_rotation 3");
-        expect(log).toContain("adb -s emulator-5582 shell am start -a android.intent.action.VIEW -d https://example.test/path");
-        expect(log).toContain("adb -s emulator-5582 shell pm grant com.example.mobile android.permission.CAMERA");
-        expect(log).toContain("adb -s emulator-5582 shell pm revoke com.example.mobile android.permission.CAMERA");
-        expect(log).toContain("adb -s emulator-5582 emu geo fix -122.4194 37.7749 10");
-        expect(log).toContain("adb -s emulator-5582 shell dumpsys battery set level 42");
-        expect(log).toContain("adb -s emulator-5582 shell dumpsys battery set ac 1");
-        expect(log).toContain("adb -s emulator-5582 shell svc wifi disable");
-        expect(log).toContain("adb -s emulator-5582 shell svc data enable");
-        expect(log).toContain("adb -s emulator-5582 shell cmd connectivity airplane-mode enable");
-        expect(log).toContain("adb -s emulator-5582 shell cmd clipboard set clip text");
-        expect(log).toContain("adb -s emulator-5582 shell cmd clipboard get");
-        expect(log).toContain("adb -s emulator-5582 shell pidof com.example.mobile");
-        expect(log).toContain("adb -s emulator-5582 shell input tap 15 25");
-        expect(log).toContain("adb -s emulator-5582 exec-out screencap -p");
-        expect(log).toContain("adb -s emulator-5582 shell screenrecord --time-limit 5 /sdcard/custom-android-recording.mp4");
-        expect(log).toContain("adb -s emulator-5582 shell pkill -2 screenrecord");
-        expect(log).toMatch(/adb -s emulator-5582 pull \/sdcard\/custom-android-recording\.mp4 [^\r\n]*ccc-device-download-[^\\/\r\n]+[\\/]payload/);
-        expect(log).toContain("adb -s emulator-5582 shell rm -f /sdcard/custom-android-recording.mp4");
-        expect(log).toContain("adb -s emulator-5582 shell screenrecord --time-limit 5 /sdcard/fail-immediate-recording.mp4");
-        expect(log).toContain("adb -s emulator-5582 shell screenrecord --time-limit 5 /sdcard/natural-exit-recording.mp4");
-        expect(log.match(/adb -s emulator-5582 pull \/sdcard\/fail-once-pull-recording\.mp4 [^\r\n]*ccc-device-download-[^\\/\r\n]+[\\/]payload/g)).toHaveLength(2);
-        expect(log).toContain("adb -s emulator-5582 shell screenrecord --time-limit 5 /sdcard/stop-cleanup-recording.mp4");
-        expect(log).toContain("adb -s emulator-5582 shell uiautomator dump /sdcard/window-android-pixel-owned.xml");
-        expect(log).toContain("adb -s emulator-5582 exec-out cat /sdcard/window-android-pixel-owned.xml");
-        const uploadStagePath = log.match(/adb -s emulator-5582 push ([^\r\n]*ccc-device-upload-[^\\/\r\n]+[\\/]payload) \/sdcard\/local\.txt/)?.[1];
-        const downloadStagePath = log.match(/adb -s emulator-5582 pull \/sdcard\/remote\.txt ([^\r\n]*ccc-device-download-[^\\/\r\n]+[\\/]payload)/)?.[1];
-        const failedUploadStagePath = log.match(/adb -s emulator-5582 push ([^\r\n]*ccc-device-upload-[^\\/\r\n]+[\\/]payload) \/sdcard\/fail-push\.txt/)?.[1];
-        expect(uploadStagePath).toBeTruthy();
-        expect(downloadStagePath).toBeTruthy();
-        expect(failedUploadStagePath).toBeTruthy();
-        expect(existsSync(uploadStagePath || "")).toBe(false);
-        expect(existsSync(downloadStagePath || "")).toBe(false);
-        expect(existsSync(failedUploadStagePath || "")).toBe(false);
-        expect(log).toContain("adb -s emulator-5582 install -r /tmp/Test.apk");
-        expect(log).toContain("adb -s emulator-5582 shell monkey -p com.example.test 1");
-        expect(log).toContain("adb -s emulator-5582 shell am start -n com.example.test/.MainActivity");
-        expect(log).toContain("adb -s emulator-5582 shell pm clear com.example.test");
-        expect(log).toContain("adb -s emulator-5582 install -r /tmp/Mobile.apk");
-        expect(log).toContain("adb -s emulator-5582 shell monkey -p com.example.mobile 1");
-        expect(log).toContain("adb -s emulator-5582 uninstall com.example.mobile");
-        expect(log).toContain("adb -s emulator-5582 shell am force-stop com.example.mobile");
-        expect(log).toContain("adb -s emulator-5582 shell pm clear com.example.mobile");
-        expect(log).not.toContain(`avdmanager delete avd --name ${avdName}`);
-        expect(log).not.toContain("appium");
     });
 
     it("returns asynchronous emulator spawn failures without disconnecting MCP or leaving running state", { timeout: TIMEOUT }, async () => {
