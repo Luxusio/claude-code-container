@@ -8639,6 +8639,7 @@ describe("getWorktreeGitMounts", () => {
         });
 
         it("projects tracked submodules from the target worktree index when its checkout metadata is stale", () => {
+            expect(isWorktreeWorkspace(workspacePath), "ordinary index remains a supported workspace").toBe(true);
             git(workspacePath, ["update-index", "--split-index"]);
             const sharedIndexValue = git(workspacePath, ["rev-parse", "--shared-index-path"]).trim();
             expect(sharedIndexValue).not.toBe("");
@@ -8667,7 +8668,7 @@ describe("getWorktreeGitMounts", () => {
             const env = { ...process.env };
             delete env.VITEST;
             const cli = spawnSync(process.execPath, [
-                "--import", import.meta.resolve("tsx"), resolve("src/index.ts"), `@${branch}`, "profile", "list",
+                resolve("dist/index.js"), `@${branch}`, "profile", "list",
             ], { cwd: sourcePath, input: "n\n", env, encoding: "utf-8", stdio: "pipe", timeout: 20_000 });
             const output = `${cli.stdout ?? ""}${cli.stderr ?? ""}`;
             expect(cli.status, output).toBe(0);

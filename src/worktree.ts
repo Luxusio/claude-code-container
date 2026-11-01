@@ -1851,7 +1851,11 @@ function isOwnedTrackedWorkspaceRepository(
             const privateSnapshots = [{ path: privateIndexPath, snapshot: captureWorktreeMetadata(privateIndexPath) }];
             const sharedIndex = spawnSync("git", ["rev-parse", "--shared-index-path"], {
                 cwd: identity.directory.realpath,
-                env: { ...pinnedNestedRepositoryEnvironment(identity), GIT_INDEX_FILE: privateIndexPath },
+                env: {
+                    ...pinnedNestedRepositoryEnvironment(identity),
+                    GIT_DIR: portableWorktreeBackpointer(identity.gitDirectory.realpath),
+                    GIT_INDEX_FILE: privateIndexPath,
+                },
                 encoding: "utf-8",
                 stdio: ["pipe", "pipe", "pipe"],
             });
