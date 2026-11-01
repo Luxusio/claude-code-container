@@ -8602,6 +8602,18 @@ describe("getWorktreeGitMounts", () => {
             });
         }
 
+        function targetsWorkspaceInventory(options: { cwd?: string; env?: NodeJS.ProcessEnv } | undefined): boolean {
+            if (options?.cwd === workspacePath || options?.env?.GIT_WORK_TREE === workspacePath) return true;
+            const privateTree = options?.env?.GIT_WORK_TREE;
+            const privateGit = options?.env?.GIT_DIR;
+            return !!privateTree && !!privateGit
+                && basename(dirname(privateTree)).startsWith("ccc-workspace-index-")
+                && options?.cwd === privateTree && privateGit === join(privateTree, ".git")
+                && options?.env?.GIT_INDEX_FILE === join(privateGit, "index")
+                && resolve(privateGit, readFileSync(join(privateGit, "commondir"), "utf-8").trim())
+                    === join(sourcePath, ".git");
+        }
+
         beforeEach(() => {
             sourcePath = join(tmpDir, "source-inventory-root");
             const origin = join(tmpDir, "source-inventory-origin");
@@ -8627,6 +8639,11 @@ describe("getWorktreeGitMounts", () => {
         });
 
         it("projects tracked submodules from the target worktree index when its checkout metadata is stale", () => {
+            git(workspacePath, ["update-index", "--split-index"]);
+            const sharedIndexValue = git(workspacePath, ["rev-parse", "--shared-index-path"]).trim();
+            expect(sharedIndexValue).not.toBe("");
+            const sharedIndex = resolve(workspacePath, sharedIndexValue);
+            expect(existsSync(sharedIndex)).toBe(true);
             if (childPath === "services/café") {
                 expect(git(workspacePath, ["ls-files", "--stage", "--", childPath])).toContain('"services/caf\\303\\251"');
             }
@@ -8655,6 +8672,7 @@ describe("getWorktreeGitMounts", () => {
             const output = `${cli.stdout ?? ""}${cli.stderr ?? ""}`;
             expect(cli.status, output).toBe(0);
             expect(output).not.toMatch(/unowned Git repository|not owned by its source|Stash content and recreate/);
+            expect(resolve(workspacePath, git(workspacePath, ["rev-parse", "--shared-index-path"]).trim())).toBe(sharedIndex);
             expect(capture(), "readiness and CLI reopen preserve Git metadata, registrations, and working files").toEqual(before);
         });
 
@@ -8706,7 +8724,7 @@ describe("getWorktreeGitMounts", () => {
                 const argv = args[1] as string[];
                 const options = args[2] as { cwd?: string; env?: NodeJS.ProcessEnv } | undefined;
                 if (argv[0] === "config" && argv.includes("--blob") && argv.includes(":.gitmodules")
-                    && options?.cwd === workspacePath) {
+                    && targetsWorkspaceInventory(options)) {
                     storageDeclarationObserved = true;
                 }
                 if (swapped && argv[0] === "worktree" && argv[1] === "list"
@@ -9065,38 +9083,68 @@ describe("getWorktreeGitMounts", () => {
             } finally {
                 overwriteGitFixtureFile(index, untrackedIndex);
             }
+            const adminDirectory = dirname(index);
+            const replacementAdmin = join(tmpDir, "replacement-workspace-admin");
+            const heldAdmin = join(tmpDir, "held-workspace-admin");
+            cpSync(adminDirectory, replacementAdmin, { recursive: true });
+            overwriteGitFixtureFile(join(replacementAdmin, "index"), trackedIndex);
             const before = capture();
             expect(() => isWorktreeWorkspace(workspacePath)).toThrow(/owned|source|metadata/);
             expect(() => assertWorkspaceReady(workspacePath, spawnSync, sourcePath)).toThrow(/owned|source|metadata/);
             expect(() => assertWorkspaceReady(workspacePath)).toThrow(/owned|source|metadata/);
-            const realSpawn = childProcess.spawnSync;
-            let indexExposedDuringQuery = false;
-            const spawn = vi.spyOn(childProcess, "spawnSync").mockImplementation(((...args: Parameters<typeof spawnSync>) => {
-                const argv = args[1] as string[];
-                const options = args[2] as { cwd?: string; env?: NodeJS.ProcessEnv } | undefined;
-                if (args[0] !== "git" || argv[0] !== "ls-files" || !argv.includes(":(literal)untracked-child")
-                    || (options?.cwd !== workspacePath && options?.env?.GIT_WORK_TREE !== workspacePath)) {
-                    return realSpawn(...args);
-                }
-                overwriteGitFixtureFile(index, trackedIndex);
-                try {
-                    indexExposedDuringQuery = true;
-                    return realSpawn(...args);
-                } finally {
-                    overwriteGitFixtureFile(index, untrackedIndex);
-                }
-            }) as typeof spawnSync);
-            syncBuiltinESMExports();
-            try {
-                let outcome: unknown;
-                try { outcome = isWorktreeWorkspace(workspacePath); }
-                catch (error) { outcome = error; }
-                expect(outcome, `Gitlink index exposed only during membership query: ${indexExposedDuringQuery}`).toBeInstanceOf(Error);
-                expect((outcome as Error).message).toMatch(/owned|source|metadata/);
-            } finally {
-                spawn.mockRestore();
+            for (const boundary of ["index bytes", "administrative directory"] as const) {
+                const realSpawn = childProcess.spawnSync;
+                const originalIndexStat = lstatSync(index, { bigint: true });
+                let indexExposedDuringQuery = false;
+                const privatePaths = new Set<string>();
+                const spawn = vi.spyOn(childProcess, "spawnSync").mockImplementation(((...args: Parameters<typeof spawnSync>) => {
+                    const argv = args[1] as string[];
+                    const options = args[2] as { cwd?: string; env?: NodeJS.ProcessEnv } | undefined;
+                    if (args[0] !== "git" || argv[0] !== "ls-files" || !argv.includes(":(literal)untracked-child")) {
+                        return realSpawn(...args);
+                    }
+                    if (!targetsWorkspaceInventory(options)) return realSpawn(...args);
+                    for (const selected of [options?.env?.GIT_DIR, options?.env?.GIT_INDEX_FILE]) {
+                        if (selected && ![adminDirectory, index, join(sourcePath, ".git")].includes(resolve(selected))) {
+                            privatePaths.add(resolve(selected));
+                        }
+                    }
+                    if (boundary === "index bytes") overwriteGitFixtureFile(index, trackedIndex);
+                    else {
+                        renameSync(adminDirectory, heldAdmin);
+                        try { renameSync(replacementAdmin, adminDirectory); }
+                        catch (error) { renameSync(heldAdmin, adminDirectory); throw error; }
+                    }
+                    try {
+                        indexExposedDuringQuery = true;
+                        return realSpawn(...args);
+                    } finally {
+                        if (boundary === "index bytes") overwriteGitFixtureFile(index, untrackedIndex);
+                        else {
+                            renameSync(adminDirectory, replacementAdmin);
+                            renameSync(heldAdmin, adminDirectory);
+                        }
+                    }
+                }) as typeof spawnSync);
                 syncBuiltinESMExports();
-                overwriteGitFixtureFile(index, untrackedIndex);
+                try {
+                    let outcome: unknown;
+                    try { outcome = isWorktreeWorkspace(workspacePath); }
+                    catch (error) { outcome = error; }
+                    expect(outcome, `${boundary} exposed only during membership query: ${indexExposedDuringQuery}`).toBeInstanceOf(Error);
+                    expect((outcome as Error).message).toMatch(/owned|source|metadata/);
+                } finally {
+                    spawn.mockRestore();
+                    syncBuiltinESMExports();
+                    if (boundary === "index bytes") overwriteGitFixtureFile(index, untrackedIndex);
+                }
+                if (boundary === "administrative directory") {
+                    const current = lstatSync(index, { bigint: true });
+                    expect([current.ino, current.mtimeNs, current.ctimeNs])
+                        .toEqual([originalIndexStat.ino, originalIndexStat.mtimeNs, originalIndexStat.ctimeNs]);
+                }
+                for (const path of privatePaths) expect(existsSync(path), `private Git inventory was retained: ${path}`).toBe(false);
+                expect(capture()).toEqual(before);
             }
             expect(git(workspacePath, ["ls-files", "--stage", "--", "untracked-child"])).toBe("");
             expect(capture()).toEqual(before);

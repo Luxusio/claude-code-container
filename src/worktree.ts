@@ -19,6 +19,7 @@ import type { WorktreeAdditionPorts } from "./ports/workspace/worktree-addition.
 export type { RemoveResult } from "./domain/workspace/removal-result.js";
 export type { WorktreeResult, WorktreeRepoResult } from "./domain/workspace/creation-result.js";
 import { createHash, randomBytes } from "crypto";
+import { tmpdir } from "os";
 import {
     chmodSync,
     closeSync,
@@ -1812,6 +1813,7 @@ function isOwnedTrackedWorkspaceRepository(
 ): boolean {
     const name = normalizeNestedRepositoryName(entry.name);
     if (!name || name !== entry.name) return false;
+    let privateInventoryRoot: string | null = null;
     try {
         const root = captureNestedRepositoryIdentity(sourceRoot);
         const ancestors = [{ path: sourceRoot, identity: root.directory }];
@@ -1829,23 +1831,67 @@ function isOwnedTrackedWorkspaceRepository(
             if (relativePathEscapesRoot(relative(root.directory.realpath, identity.directory.realpath))) return false;
             graph.push({ name: repository.name, sourcePath: path, workspacePath: repository.path, identity });
         }
-        const inventories = graph.slice(0, -1).map(repository => {
+        const inventories = graph.slice(0, -1).map((repository, inventoryIndex) => {
             const identity = captureNestedRepositoryIdentity(repository.workspacePath);
             const indexPath = join(identity.gitDirectory.realpath, "index");
-            const generation = lstatSync(indexPath, { bigint: true });
             const snapshot = captureWorktreeMetadata(indexPath);
+            const head = captureWorktreeMetadata(join(identity.gitDirectory.realpath, "HEAD"));
+            if (!privateInventoryRoot) {
+                privateInventoryRoot = mkdtempSync(join(tmpdir(), "ccc-workspace-index-"));
+                chmodSync(privateInventoryRoot, 0o700);
+            }
+            const privateWorkspace = join(privateInventoryRoot, String(inventoryIndex));
+            const privateGitDirectory = join(privateWorkspace, ".git");
+            mkdirSync(privateGitDirectory, { recursive: true, mode: 0o700 });
+            const privateIndexPath = join(privateGitDirectory, "index");
+            writeFileSync(privateIndexPath, snapshot.content, { flag: "wx", mode: 0o600 });
+            writeFileSync(join(privateGitDirectory, "HEAD"), head.content, { flag: "wx", mode: 0o600 });
+            writeFileSync(join(privateGitDirectory, "commondir"),
+                `${portableWorktreeBackpointer(identity.commonDirectory.realpath)}\n`, { flag: "wx", mode: 0o600 });
+            const privateSnapshots = [{ path: privateIndexPath, snapshot: captureWorktreeMetadata(privateIndexPath) }];
+            const sharedIndex = spawnSync("git", ["rev-parse", "--shared-index-path"], {
+                cwd: identity.directory.realpath,
+                env: { ...pinnedNestedRepositoryEnvironment(identity), GIT_INDEX_FILE: privateIndexPath },
+                encoding: "utf-8",
+                stdio: ["pipe", "pipe", "pipe"],
+            });
+            if (sharedIndex.error || sharedIndex.status !== 0) {
+                throw new Error(`Unable to inspect workspace split index: ${indexPath}`);
+            }
+            let shared: { path: string; snapshot: WorktreeMetadataSnapshot } | null = null;
+            const sharedOutput = (sharedIndex.stdout ?? "").trim();
+            if (sharedOutput) {
+                const path = isAbsolute(sharedOutput) ? sharedOutput : resolve(identity.directory.realpath, sharedOutput);
+                const name = basename(path);
+                if (!/^sharedindex\.(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(name)
+                    || !sameDirectExistingObject(dirname(path), identity.gitDirectory.realpath)) {
+                    throw new Error(`Invalid workspace shared index path: ${indexPath}`);
+                }
+                if (!/^sharedindex\.0+$/.test(name)) {
+                    shared = { path, snapshot: captureWorktreeMetadata(path) };
+                    const privateSharedPath = join(privateGitDirectory, name);
+                    writeFileSync(privateSharedPath, shared.snapshot.content, { flag: "wx", mode: 0o600 });
+                    privateSnapshots.push({ path: privateSharedPath, snapshot: captureWorktreeMetadata(privateSharedPath) });
+                }
+            }
+            const privateIdentity = captureNestedRepositoryIdentity(privateWorkspace);
             const assertUnchanged = () => {
                 assertNestedRepositoryIdentity(repository.workspacePath, identity);
                 if (!worktreeMetadataMatches(indexPath, snapshot)) {
                     throw new Error(`Workspace index changed during ownership validation: ${indexPath}`);
                 }
-                const observed = lstatSync(indexPath, { bigint: true });
-                if (observed.mtimeNs !== generation.mtimeNs || observed.ctimeNs !== generation.ctimeNs) {
-                    throw new Error(`Workspace index generation changed during ownership validation: ${indexPath}`);
+                if (shared && !worktreeMetadataMatches(shared.path, shared.snapshot)) {
+                    throw new Error(`Workspace shared index changed during ownership validation: ${shared.path}`);
+                }
+                assertNestedRepositoryIdentity(privateWorkspace, privateIdentity);
+                for (const file of privateSnapshots) {
+                    if (!worktreeMetadataMatches(file.path, file.snapshot)) {
+                        throw new Error(`Private workspace index changed during ownership validation: ${file.path}`);
+                    }
                 }
             };
             assertUnchanged();
-            return { identity, assertUnchanged };
+            return { identity: privateIdentity, assertUnchanged };
         });
         const inventory = inventories[inventories.length - 1].identity;
         const parent = graph[graph.length - 2];
@@ -1886,6 +1932,8 @@ function isOwnedTrackedWorkspaceRepository(
         return true;
     } catch {
         return false;
+    } finally {
+        if (privateInventoryRoot) rmSync(privateInventoryRoot, { recursive: true, force: true, maxRetries: 3, retryDelay: 20 });
     }
 }
 
