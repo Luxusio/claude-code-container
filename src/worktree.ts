@@ -1424,17 +1424,29 @@ function trackedSubmoduleGitDirectoryIsOwned(
     parentRepository: string,
     candidateName: string,
     candidatePath: string,
-    inventoryRepository = parentRepository,
-    parentIdentity?: NestedRepositoryIdentity,
 ): boolean {
-    if (!isTrackedGitlink(inventoryRepository, candidateName)) return false;
+    return captureOwnedTrackedSubmoduleStorage(parentRepository, candidateName, candidatePath) !== null;
+}
+
+function captureOwnedTrackedSubmoduleStorage(
+    parentRepository: string,
+    candidateName: string,
+    candidatePath: string,
+    ownership?: {
+        inventoryRepository: string;
+        parent: NestedRepositoryIdentity;
+        source: NestedRepositoryIdentity;
+    },
+): (() => void) | null {
+    const inventoryRepository = ownership?.inventoryRepository ?? parentRepository;
+    if (!isTrackedGitlink(inventoryRepository, candidateName)) return null;
     const declaration = submoduleDeclarations(inventoryRepository, true)
         .find(({ path }) => path === candidateName);
     const storageName = declaration?.name ?? candidateName;
 
     let ownerGitDirectory: string;
-    if (parentIdentity) {
-        ownerGitDirectory = parentIdentity.gitDirectory.realpath;
+    if (ownership) {
+        ownerGitDirectory = ownership.parent.gitDirectory.realpath;
     } else {
         const gitDirectory = spawnSync(
             "git",
@@ -1450,41 +1462,49 @@ function trackedSubmoduleGitDirectoryIsOwned(
             gitDirectory.error
             || gitDirectory.status !== 0
             || !gitDirectoryOutput
-        ) return false;
+        ) return null;
         ownerGitDirectory = resolve(parentRepository, gitDirectoryOutput);
     }
 
-    const expectedGitDirectory = resolve(
-        ownerGitDirectory,
-        "modules",
-        ...storageName.split("/"),
-    );
-    const gitFile = join(candidatePath, ".git");
-    const content = readFileSync(gitFile, "utf-8").trim();
-    const match = content.match(/^gitdir:\s*(.+)$/);
-    if (!match) return false;
-    const actualGitDirectory = resolve(dirname(gitFile), match[1].trim());
+    let actualGitDirectory: string;
+    if (ownership) {
+        actualGitDirectory = ownership.source.gitDirectory.realpath;
+    } else {
+        const gitFile = join(candidatePath, ".git");
+        const content = readFileSync(gitFile, "utf-8").trim();
+        const match = content.match(/^gitdir:\s*(.+)$/);
+        if (!match) return null;
+        actualGitDirectory = resolve(dirname(gitFile), match[1].trim());
+    }
     try {
-        if (parentIdentity) assertNestedRepositoryIdentity(parentRepository, parentIdentity);
-        const ownerGitRealpath = observedRealpath(ownerGitDirectory);
-        let observedPath = ownerGitDirectory;
+        const owner = ownership?.parent.gitDirectory ?? captureDirectoryIdentity(ownerGitDirectory);
+        const directories = [{ path: ownerGitDirectory, identity: owner }];
+        let expectedPath = owner.realpath;
         for (const segment of ["modules", ...storageName.split("/")]) {
-            observedPath = join(observedPath, segment);
-            const observed = lstatSync(observedPath);
-            if (observed.isSymbolicLink()) return false;
+            expectedPath = join(expectedPath, segment);
+            const identity = captureDirectoryIdentity(expectedPath);
+            if (relativePathEscapesRoot(relative(owner.realpath, identity.realpath))) return null;
+            directories.push({ path: expectedPath, identity });
         }
-        const expected = lstatSync(expectedGitDirectory);
-        if (!expected.isDirectory()) return false;
-        const relativeExpected = relative(
-            ownerGitRealpath,
-            observedRealpath(expectedGitDirectory),
-        );
-        if (relativePathEscapesRoot(relativeExpected)) return false;
-        const owned = sameObservedPath(actualGitDirectory, expectedGitDirectory);
-        if (parentIdentity) assertNestedRepositoryIdentity(parentRepository, parentIdentity);
-        return owned;
+        const expected = directories[directories.length - 1].identity;
+        if (ownership) {
+            const actual = ownership.source.gitDirectory;
+            if (expected.ino === "0" || expected.dev !== actual.dev || expected.ino !== actual.ino
+                || (process.platform === "win32"
+                    ? expected.realpath.toLowerCase() !== actual.realpath.toLowerCase()
+                    : expected.realpath !== actual.realpath)) return null;
+        } else if (!sameObservedPath(actualGitDirectory, expectedPath)) return null;
+        const assertUnchanged = () => {
+            if (ownership) {
+                assertNestedRepositoryIdentity(parentRepository, ownership.parent);
+                assertNestedRepositoryIdentity(candidatePath, ownership.source);
+            }
+            for (const directory of directories) assertDirectoryIdentity(directory.path, directory.identity);
+        };
+        assertUnchanged();
+        return assertUnchanged;
     } catch {
-        return false;
+        return null;
     }
 }
 
@@ -1781,32 +1801,49 @@ function isOwnedTrackedWorkspaceRepository(
     const name = normalizeNestedRepositoryName(entry.name);
     if (!name || name !== entry.name || !isNestedTrackedGitlink(workspacePath, repositories, entry)) return false;
     try {
-        const root = captureDirectoryIdentity(sourceRoot);
-        const ancestors = [{ path: sourceRoot, identity: root }];
-        let sourcePath = root.realpath;
+        const root = captureNestedRepositoryIdentity(sourceRoot);
+        const ancestors = [{ path: sourceRoot, identity: root.directory }];
+        let sourcePath = root.directory.realpath;
         for (const segment of name.split("/")) {
             sourcePath = join(sourcePath, segment);
             ancestors.push({ path: sourcePath, identity: captureDirectoryIdentity(sourcePath) });
         }
-        const source = captureNestedRepositoryIdentity(sourcePath);
-        if (relativePathEscapesRoot(relative(root.realpath, source.directory.realpath))) return false;
-        const parent = repositories
-            .filter(candidate => candidate.name !== name && name.startsWith(`${candidate.name}/`))
-            .sort((left, right) => right.name.length - left.name.length)[0];
-        const sourceParent = parent ? join(root.realpath, ...parent.name.split("/")) : sourceRoot;
-        const parentIdentity = captureNestedRepositoryIdentity(sourceParent);
-        const kind = gitLinkKind(join(sourcePath, ".git"));
-        if (kind === "gitlink" && !trackedSubmoduleGitDirectoryIsOwned(
-            sourceParent,
-            parent ? name.slice(parent.name.length + 1) : name,
-            sourcePath,
-            parent?.path ?? workspacePath,
-            parentIdentity,
-        )) return false;
-        if (kind === "worktree" && gitLinkKind(join(sourceRoot, ".git")) !== "worktree") return false;
-        if (!isValidWorktreeForNestedIdentity(entry.path, source)) return false;
-        assertNestedRepositoryIdentity(sourcePath, source);
-        assertNestedRepositoryIdentity(sourceParent, parentIdentity);
+        const graph = [{ name: "", sourcePath: sourceRoot, workspacePath, identity: root }];
+        for (const repository of repositories
+            .filter(candidate => candidate.name === name || name.startsWith(`${candidate.name}/`))
+            .sort((left, right) => left.name.length - right.name.length)) {
+            const path = join(root.directory.realpath, ...repository.name.split("/"));
+            const identity = captureNestedRepositoryIdentity(path);
+            if (relativePathEscapesRoot(relative(root.directory.realpath, identity.directory.realpath))) return false;
+            graph.push({ name: repository.name, sourcePath: path, workspacePath: repository.path, identity });
+        }
+        const kindOf = (identity: NestedRepositoryIdentity): GitLinkKind => (
+            identity.gitFileContent === null ? "directory" : identity.commonDirectoryFile ? "worktree" : "gitlink"
+        );
+        const rootKind = kindOf(root);
+        if (rootKind === "worktree" && !isValidWorktreeForNestedIdentity(sourceRoot, root)) return false;
+        if (!isValidWorktreeForNestedIdentity(workspacePath, root)) return false;
+        const storageChecks: Array<() => void> = [];
+        for (let index = 1; index < graph.length; index++) {
+            const source = graph[index];
+            const parent = graph[index - 1];
+            const kind = kindOf(source.identity);
+            if (kind === "gitlink") {
+                const storage = captureOwnedTrackedSubmoduleStorage(
+                    parent.sourcePath,
+                    parent.name ? source.name.slice(parent.name.length + 1) : source.name,
+                    source.sourcePath,
+                    { inventoryRepository: parent.workspacePath, parent: parent.identity, source: source.identity },
+                );
+                if (!storage) return false;
+                storageChecks.push(storage);
+            }
+            if (kind === "worktree" && (rootKind !== "worktree"
+                || !isValidWorktreeForNestedIdentity(source.sourcePath, source.identity))) return false;
+            if (!isValidWorktreeForNestedIdentity(source.workspacePath, source.identity)) return false;
+        }
+        for (const assertStorageUnchanged of storageChecks) assertStorageUnchanged();
+        for (const source of graph) assertNestedRepositoryIdentity(source.sourcePath, source.identity);
         for (const ancestor of ancestors) assertDirectoryIdentity(ancestor.path, ancestor.identity);
         return true;
     } catch {

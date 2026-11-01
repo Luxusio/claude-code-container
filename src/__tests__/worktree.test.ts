@@ -8791,6 +8791,251 @@ describe("getWorktreeGitMounts", () => {
             expect(capture(), "the original parent, foreign storage, and both registrations remain unchanged").toEqual(before);
         });
 
+        function foreignRegisteredCandidate(name: string) {
+            const sourceGit = join(sourceSubmodule, ".git");
+            const original = readFileSync(sourceGit, "utf-8");
+            git(sourceSubmodule, ["worktree", "remove", "--force", workspaceSubmodule]);
+            const foreign = join(tmpDir, name);
+            initRepo(foreign);
+            git(foreign, ["worktree", "add", "-b", name, workspaceSubmodule]);
+            const replacement = `gitdir: ${join(foreign, ".git")}\n`;
+            overwriteGitFixtureFile(sourceGit, replacement);
+            writeFileSync(join(workspaceSubmodule, "untracked.txt"), "foreign working data\n");
+            expect(isValidWorktree(workspaceSubmodule, sourceSubmodule)).toBe(true);
+            return { sourceGit, original, replacement, foreign };
+        }
+
+        it("does not reclassify a captured foreign Git file as an ordinary repository during a transient lstat", () => {
+            const { sourceGit } = foreignRegisteredCandidate("foreign-kind-race");
+            const heldGit = join(sourceSubmodule, ".git-held-for-kind-race");
+            const before = capture();
+            const realStat = filesystem.lstatSync;
+            let ordinaryReads = 0;
+            let directoryObserved = false;
+            const stat = vi.spyOn(filesystem, "lstatSync").mockImplementation(((...args: Parameters<typeof lstatSync>) => {
+                if (String(args[0]) === sourceGit && !(args[1] as { bigint?: boolean } | undefined)?.bigint
+                    && ++ordinaryReads === 2) {
+                    renameSync(sourceGit, heldGit);
+                    try {
+                        mkdirSync(sourceGit);
+                        directoryObserved = true;
+                        return realStat(...args);
+                    } finally {
+                        rmSync(sourceGit, { recursive: true, force: true });
+                        renameSync(heldGit, sourceGit);
+                    }
+                }
+                return realStat(...args);
+            }) as typeof lstatSync);
+            syncBuiltinESMExports();
+            try {
+                let outcome: unknown;
+                try { outcome = isWorktreeWorkspace(workspacePath); }
+                catch (error) { outcome = error; }
+                expect(outcome, `fresh classification observed directory: ${directoryObserved}`).toBeInstanceOf(Error);
+                expect((outcome as Error).message).toMatch(/owned|source|metadata/);
+            } finally {
+                stat.mockRestore();
+                syncBuiltinESMExports();
+            }
+            expect(capture()).toEqual(before);
+        });
+
+        it("does not qualify captured foreign storage with a temporary legitimate Git file read", () => {
+            const { sourceGit, original, replacement } = foreignRegisteredCandidate("foreign-storage-read-race");
+            const before = capture();
+            const realRead = filesystem.readFileSync;
+            const realSpawn = childProcess.spawnSync;
+            let declarationObserved = false;
+            let legitimateStorageRead = false;
+            const spawn = vi.spyOn(childProcess, "spawnSync").mockImplementation(((...args: Parameters<typeof spawnSync>) => {
+                const result = realSpawn(...args);
+                const argv = args[1] as string[];
+                const options = args[2] as { cwd?: string } | undefined;
+                if (argv[0] === "config" && argv.includes(":.gitmodules") && options?.cwd === workspacePath) {
+                    declarationObserved = true;
+                }
+                return result;
+            }) as typeof spawnSync);
+            const read = vi.spyOn(filesystem, "readFileSync").mockImplementation(((...args: Parameters<typeof readFileSync>) => {
+                if (String(args[0]) === sourceGit && declarationObserved && !legitimateStorageRead) {
+                    overwriteGitFixtureFile(sourceGit, original);
+                    try {
+                        legitimateStorageRead = true;
+                        return realRead(...args);
+                    } finally {
+                        overwriteGitFixtureFile(sourceGit, replacement);
+                    }
+                }
+                return realRead(...args);
+            }) as typeof readFileSync);
+            syncBuiltinESMExports();
+            try {
+                let outcome: unknown;
+                try { outcome = isWorktreeWorkspace(workspacePath); }
+                catch (error) { outcome = error; }
+                expect(outcome, `fresh storage read observed legitimate bytes: ${legitimateStorageRead}`).toBeInstanceOf(Error);
+                expect((outcome as Error).message).toMatch(/owned|source|metadata/);
+            } finally {
+                read.mockRestore();
+                spawn.mockRestore();
+                syncBuiltinESMExports();
+                overwriteGitFixtureFile(sourceGit, replacement);
+            }
+            expect(capture()).toEqual(before);
+        });
+
+        it("does not accept a checked module directory replaced by a foreign symlink during path comparison", context => {
+            const { foreign } = foreignRegisteredCandidate("foreign-module-path-race");
+            const expected = join(sourcePath, ".git", "modules", ...childPath.split("/"));
+            const foreignGit = join(foreign, ".git");
+            const held = join(dirname(expected), "module-held-for-race");
+            const preparedLink = join(tmpDir, "prepared-module-link");
+            try { directorySymlink(foreignGit, preparedLink); }
+            catch (error) {
+                if (process.platform === "win32" && ["EPERM", "EACCES"].includes((error as NodeJS.ErrnoException).code ?? "")) {
+                    context.skip("native directory link creation is unavailable");
+                    return;
+                }
+                throw error;
+            }
+            const before = capture();
+            const realPath = filesystem.realpathSync;
+            const nativePath = realPath.native;
+            let checkedExpected = false;
+            let swapped = false;
+            let comparisonSwapped = false;
+            const restore = () => {
+                if (!swapped) return;
+                renameSync(expected, preparedLink);
+                renameSync(held, expected);
+                swapped = false;
+            };
+            const path = vi.spyOn(filesystem, "realpathSync").mockImplementation(((...args: Parameters<typeof realpathSync>) => {
+                if (String(args[0]) === foreignGit && checkedExpected && !comparisonSwapped) {
+                    renameSync(expected, held);
+                    try { renameSync(preparedLink, expected); }
+                    catch (error) { renameSync(held, expected); throw error; }
+                    swapped = true;
+                    comparisonSwapped = true;
+                }
+                try {
+                    const result = realPath(...args);
+                    if (String(args[0]) === expected && !swapped) checkedExpected = true;
+                    return result;
+                } finally {
+                    if (String(args[0]) === expected && swapped) restore();
+                }
+            }) as typeof realpathSync);
+            Object.assign(path, { native: (...args: Parameters<typeof realpathSync.native>) => {
+                const result = nativePath(...args);
+                if (String(args[0]) === expected) checkedExpected = true;
+                return result;
+            } });
+            syncBuiltinESMExports();
+            try {
+                let outcome: unknown;
+                try { outcome = isWorktreeWorkspace(workspacePath); }
+                catch (error) { outcome = error; }
+                expect(outcome, `final comparison observed swapped module: ${comparisonSwapped}`).toBeInstanceOf(Error);
+                expect((outcome as Error).message).toMatch(/owned|source|metadata/);
+            } finally {
+                path.mockRestore();
+                syncBuiltinESMExports();
+                restore();
+            }
+            expect(capture()).toEqual(before);
+        });
+
+        it("does not grant foreign source-worktree authority from a briefly registered root Git file", () => {
+            git(sourceSubmodule, ["worktree", "remove", "--force", workspaceSubmodule]);
+            rmSync(sourceSubmodule, { recursive: true, force: true });
+            const foreignChild = join(tmpDir, "foreign-child-registry");
+            initRepo(foreignChild);
+            git(foreignChild, ["worktree", "add", "-b", "foreign-source-node", sourceSubmodule]);
+            git(foreignChild, ["worktree", "add", "-b", "foreign-workspace-node", workspaceSubmodule]);
+            expect(isValidWorktree(sourceSubmodule, foreignChild)).toBe(true);
+            expect(isValidWorktree(workspaceSubmodule, sourceSubmodule)).toBe(true);
+
+            const foreignRoot = join(tmpDir, "foreign-root-registry");
+            initRepo(foreignRoot);
+            const heldSource = join(tmpDir, "source-held-for-registration");
+            const parkedRoot = join(tmpDir, "parked-foreign-root");
+            renameSync(sourcePath, heldSource);
+            try {
+                git(foreignRoot, ["worktree", "add", "-b", "foreign-root-node", sourcePath]);
+                renameSync(sourcePath, parkedRoot);
+            } finally {
+                if (existsSync(sourcePath)) rmSync(sourcePath, { recursive: true, force: true });
+                renameSync(heldSource, sourcePath);
+            }
+            const sourceGit = join(sourceSubmodule, ".git");
+            const rootGit = join(sourcePath, ".git");
+            const heldRootGit = join(sourcePath, ".git-held-for-root-kind");
+            const parkedGit = join(parkedRoot, ".git");
+            let swapped = false;
+            const swapRoot = () => {
+                renameSync(rootGit, heldRootGit);
+                try { renameSync(parkedGit, rootGit); }
+                catch (error) { renameSync(heldRootGit, rootGit); throw error; }
+                swapped = true;
+            };
+            const restoreRoot = () => {
+                if (!swapped) return;
+                renameSync(rootGit, parkedGit);
+                renameSync(heldRootGit, rootGit);
+                swapped = false;
+            };
+            // This is a real registered root with the right backpointer, not a forged commondir.
+            try {
+                swapRoot();
+                expect(isValidWorktree(sourcePath, foreignRoot)).toBe(true);
+            } finally {
+                restoreRoot();
+            }
+            const before = capture();
+            const realRead = filesystem.readFileSync;
+            const realStat = filesystem.lstatSync;
+            const realSpawn = childProcess.spawnSync;
+            let childMetadataReads = 0;
+            let transientRootObserved = false;
+            const read = vi.spyOn(filesystem, "readFileSync").mockImplementation(((...args: Parameters<typeof readFileSync>) => {
+                const result = realRead(...args);
+                if (String(args[0]) === sourceGit) childMetadataReads += 1;
+                return result;
+            }) as typeof readFileSync);
+            const stat = vi.spyOn(filesystem, "lstatSync").mockImplementation(((...args: Parameters<typeof lstatSync>) => {
+                if (String(args[0]) === rootGit && !(args[1] as { bigint?: boolean } | undefined)?.bigint
+                    && childMetadataReads >= 2 && !transientRootObserved) {
+                    swapRoot();
+                    transientRootObserved = true;
+                }
+                return realStat(...args);
+            }) as typeof lstatSync);
+            const spawn = vi.spyOn(childProcess, "spawnSync").mockImplementation(((...args: Parameters<typeof spawnSync>) => {
+                const result = realSpawn(...args);
+                const argv = args[1] as string[];
+                if (swapped && argv[0] === "--git-dir" && argv[1] === join(foreignRoot, ".git")
+                    && argv.includes("worktree") && argv.includes("list")) restoreRoot();
+                return result;
+            }) as typeof spawnSync);
+            syncBuiltinESMExports();
+            try {
+                let outcome: unknown;
+                try { outcome = isWorktreeWorkspace(workspacePath); }
+                catch (error) { outcome = error; }
+                expect(outcome, `fresh root classification observed registered B: ${transientRootObserved}`).toBeInstanceOf(Error);
+                expect((outcome as Error).message).toMatch(/owned|source|metadata/);
+            } finally {
+                read.mockRestore();
+                stat.mockRestore();
+                spawn.mockRestore();
+                syncBuiltinESMExports();
+                restoreRoot();
+            }
+            expect(capture(), "ordinary root A and both genuine foreign registrations remain unchanged").toEqual(before);
+        });
+
         it.each(["absent", "symlink"] as const)("refuses %s same-relative source evidence", state => {
             const heldSource = join(sourcePath, "services", "held-source");
             renameSync(sourceSubmodule, heldSource);
