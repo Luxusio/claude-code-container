@@ -9055,10 +9055,50 @@ describe("getWorktreeGitMounts", () => {
             git(sourceChild, ["worktree", "add", "-b", "untracked-child", child]);
             expect(isValidWorktree(child, sourceChild)).toBe(true);
             expect(git(workspacePath, ["ls-files", "--stage", "--", "untracked-child"])).toBe("");
+            const index = resolve(workspacePath, git(workspacePath, ["rev-parse", "--git-path", "index"]).trim());
+            const untrackedIndex = readFileSync(index);
+            let trackedIndex = untrackedIndex;
+            try {
+                const head = git(sourceChild, ["rev-parse", "HEAD"]).trim();
+                git(workspacePath, ["update-index", "--add", "--cacheinfo", `160000,${head},untracked-child`]);
+                trackedIndex = readFileSync(index);
+            } finally {
+                overwriteGitFixtureFile(index, untrackedIndex);
+            }
             const before = capture();
             expect(() => isWorktreeWorkspace(workspacePath)).toThrow(/owned|source|metadata/);
             expect(() => assertWorkspaceReady(workspacePath, spawnSync, sourcePath)).toThrow(/owned|source|metadata/);
             expect(() => assertWorkspaceReady(workspacePath)).toThrow(/owned|source|metadata/);
+            const realSpawn = childProcess.spawnSync;
+            let indexExposedDuringQuery = false;
+            const spawn = vi.spyOn(childProcess, "spawnSync").mockImplementation(((...args: Parameters<typeof spawnSync>) => {
+                const argv = args[1] as string[];
+                const options = args[2] as { cwd?: string; env?: NodeJS.ProcessEnv } | undefined;
+                if (args[0] !== "git" || argv[0] !== "ls-files" || !argv.includes(":(literal)untracked-child")
+                    || (options?.cwd !== workspacePath && options?.env?.GIT_WORK_TREE !== workspacePath)) {
+                    return realSpawn(...args);
+                }
+                overwriteGitFixtureFile(index, trackedIndex);
+                try {
+                    indexExposedDuringQuery = true;
+                    return realSpawn(...args);
+                } finally {
+                    overwriteGitFixtureFile(index, untrackedIndex);
+                }
+            }) as typeof spawnSync);
+            syncBuiltinESMExports();
+            try {
+                let outcome: unknown;
+                try { outcome = isWorktreeWorkspace(workspacePath); }
+                catch (error) { outcome = error; }
+                expect(outcome, `Gitlink index exposed only during membership query: ${indexExposedDuringQuery}`).toBeInstanceOf(Error);
+                expect((outcome as Error).message).toMatch(/owned|source|metadata/);
+            } finally {
+                spawn.mockRestore();
+                syncBuiltinESMExports();
+                overwriteGitFixtureFile(index, untrackedIndex);
+            }
+            expect(git(workspacePath, ["ls-files", "--stage", "--", "untracked-child"])).toBe("");
             expect(capture()).toEqual(before);
         });
 

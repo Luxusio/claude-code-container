@@ -1256,11 +1256,20 @@ function gitLinkKind(gitPath: string): GitLinkKind {
     }
 }
 
-function isTrackedGitlink(repositoryPath: string, entryName: string): boolean {
+function isTrackedGitlink(
+    repositoryPath: string,
+    entryName: string,
+    identity: NestedRepositoryIdentity | null = null,
+): boolean {
     const result = spawnSync(
         "git",
         ["ls-files", "--stage", "-z", "--", `:(literal)${entryName}`],
-        { cwd: repositoryPath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+        {
+            cwd: identity?.directory.realpath ?? repositoryPath,
+            ...(identity ? { env: pinnedNestedRepositoryEnvironment(identity) } : {}),
+            encoding: "utf-8",
+            stdio: ["pipe", "pipe", "pipe"],
+        },
     );
     if (result.error || result.status !== 0) return false;
     const matches = (result.stdout ?? "")
@@ -1350,12 +1359,14 @@ type SubmoduleDeclaration = {
 function submoduleDeclarations(
     repositoryPath: string,
     strict: boolean,
+    identity: NestedRepositoryIdentity | null = null,
 ): SubmoduleDeclaration[] {
     const tracked = spawnSync(
         "git",
         ["ls-files", "--error-unmatch", "--", ".gitmodules"],
         {
-            cwd: repositoryPath,
+            cwd: identity?.directory.realpath ?? repositoryPath,
+            ...(identity ? { env: pinnedNestedRepositoryEnvironment(identity) } : {}),
             encoding: "utf-8",
             stdio: ["pipe", "pipe", "pipe"],
         },
@@ -1381,7 +1392,8 @@ function submoduleDeclarations(
             "^submodule\\..*\\.path$",
         ],
         {
-            cwd: repositoryPath,
+            cwd: identity?.directory.realpath ?? repositoryPath,
+            ...(identity ? { env: pinnedNestedRepositoryEnvironment(identity) } : {}),
             encoding: "utf-8",
             stdio: ["pipe", "pipe", "pipe"],
         },
@@ -1433,14 +1445,14 @@ function captureOwnedTrackedSubmoduleStorage(
     candidateName: string,
     candidatePath: string,
     ownership?: {
-        inventoryRepository: string;
+        inventory: NestedRepositoryIdentity;
         parent: NestedRepositoryIdentity;
         source: NestedRepositoryIdentity;
     },
 ): (() => void) | null {
-    const inventoryRepository = ownership?.inventoryRepository ?? parentRepository;
-    if (!isTrackedGitlink(inventoryRepository, candidateName)) return null;
-    const declaration = submoduleDeclarations(inventoryRepository, true)
+    const inventoryRepository = ownership?.inventory.directory.realpath ?? parentRepository;
+    if (!isTrackedGitlink(inventoryRepository, candidateName, ownership?.inventory)) return null;
+    const declaration = submoduleDeclarations(inventoryRepository, true, ownership?.inventory)
         .find(({ path }) => path === candidateName);
     const storageName = declaration?.name ?? candidateName;
 
@@ -1799,7 +1811,7 @@ function isOwnedTrackedWorkspaceRepository(
     entry: WorkspaceEntry,
 ): boolean {
     const name = normalizeNestedRepositoryName(entry.name);
-    if (!name || name !== entry.name || !isNestedTrackedGitlink(workspacePath, repositories, entry)) return false;
+    if (!name || name !== entry.name) return false;
     try {
         const root = captureNestedRepositoryIdentity(sourceRoot);
         const ancestors = [{ path: sourceRoot, identity: root.directory }];
@@ -1817,6 +1829,31 @@ function isOwnedTrackedWorkspaceRepository(
             if (relativePathEscapesRoot(relative(root.directory.realpath, identity.directory.realpath))) return false;
             graph.push({ name: repository.name, sourcePath: path, workspacePath: repository.path, identity });
         }
+        const inventories = graph.slice(0, -1).map(repository => {
+            const identity = captureNestedRepositoryIdentity(repository.workspacePath);
+            const indexPath = join(identity.gitDirectory.realpath, "index");
+            const generation = lstatSync(indexPath, { bigint: true });
+            const snapshot = captureWorktreeMetadata(indexPath);
+            const assertUnchanged = () => {
+                assertNestedRepositoryIdentity(repository.workspacePath, identity);
+                if (!worktreeMetadataMatches(indexPath, snapshot)) {
+                    throw new Error(`Workspace index changed during ownership validation: ${indexPath}`);
+                }
+                const observed = lstatSync(indexPath, { bigint: true });
+                if (observed.mtimeNs !== generation.mtimeNs || observed.ctimeNs !== generation.ctimeNs) {
+                    throw new Error(`Workspace index generation changed during ownership validation: ${indexPath}`);
+                }
+            };
+            assertUnchanged();
+            return { identity, assertUnchanged };
+        });
+        const inventory = inventories[inventories.length - 1].identity;
+        const parent = graph[graph.length - 2];
+        if (!isTrackedGitlink(
+            parent.workspacePath,
+            parent.name ? name.slice(parent.name.length + 1) : name,
+            inventory,
+        )) return false;
         const kindOf = (identity: NestedRepositoryIdentity): GitLinkKind => (
             identity.gitFileContent === null ? "directory" : identity.commonDirectoryFile ? "worktree" : "gitlink"
         );
@@ -1833,7 +1870,7 @@ function isOwnedTrackedWorkspaceRepository(
                     parent.sourcePath,
                     parent.name ? source.name.slice(parent.name.length + 1) : source.name,
                     source.sourcePath,
-                    { inventoryRepository: parent.workspacePath, parent: parent.identity, source: source.identity },
+                    { inventory: inventories[index - 1].identity, parent: parent.identity, source: source.identity },
                 );
                 if (!storage) return false;
                 storageChecks.push(storage);
@@ -1845,6 +1882,7 @@ function isOwnedTrackedWorkspaceRepository(
         for (const assertStorageUnchanged of storageChecks) assertStorageUnchanged();
         for (const source of graph) assertNestedRepositoryIdentity(source.sourcePath, source.identity);
         for (const ancestor of ancestors) assertDirectoryIdentity(ancestor.path, ancestor.identity);
+        for (const inventory of inventories) inventory.assertUnchanged();
         return true;
     } catch {
         return false;
