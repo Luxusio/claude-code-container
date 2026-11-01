@@ -225,6 +225,77 @@ describe("Hyper-V Level 3 launcher", () => {
         }
     });
 
+    it.each(["closed", "unconfirmed"])("retains provider failure and tool evidence when watchdog completion is %s", mode => {
+        const root = mkdtempSync(join(tmpdir(), "ccc-provider-watchdog-failure-"));
+        const fixture = join(root, "level2-hyper-v-linux-vm.ts");
+        const summaryFile = join(root, "summary.json");
+        const callsFile = join(root, "native-calls.jsonl");
+        const preload = join(root, "watchdog-fixture.cjs");
+        const name = "provider primary failure";
+        const result = { status: "FAIL", steps: [
+            { name: "provider prepared", status: "PASS" },
+            { name: "provider failed", status: "FAIL", reason: "fixture-primary-failure" },
+        ] };
+        const toolCalls = [{ name: "status", arguments: { deviceId: "fixture-device" }, outcome: "ok",
+            okPayloadJson: true, okPayloadShape: { kind: "object", keys: ["deviceId"] }, mcpSessionId: "fixture-session" }];
+        const toolSessions = [{ id: "fixture-session", name: "fixture-session", serverSource: "source", envOverrides: [] }];
+        try {
+            writeFileSync(join(root, "package.json"), JSON.stringify({ type: "module" }));
+            writeFileSync(fixture, [
+                `export const name = ${JSON.stringify(name)};`,
+                "export async function run() {",
+                `globalThis[Symbol.for('ccc.deviceLabRealTests.toolCalls')] = ${JSON.stringify(toolCalls)};`,
+                `globalThis[Symbol.for('ccc.deviceLabRealTests.toolSessions')] = ${JSON.stringify(toolSessions)};`,
+                `return ${JSON.stringify(result)};`,
+                "}",
+            ].join("\n"));
+            writeFileSync(preload, `
+const cp=require('node:child_process'),{EventEmitter}=require('node:events'),{PassThrough}=require('node:stream'),fs=require('node:fs');
+const spawn=cp.spawn,spawnSync=cp.spawnSync,kill=process.kill,pid=2147483646,mode=${JSON.stringify(mode)};
+function fake(){return Object.assign(new EventEmitter(),{pid,exitCode:null,signalCode:null,stdin:new PassThrough(),stdio:[null,null,null,new PassThrough()],unref(){},kill(){return false;}});}
+cp.spawn=function(command,args,options){
+ if(mode==='unconfirmed'&&args.some(arg=>String(arg).endsWith('provider-worker.ts'))){
+  const child=fake();setImmediate(()=>child.stdio[3].end(${JSON.stringify(JSON.stringify({ ok: true, file: fixture, name, result, toolCalls, toolSessions }))}));return child;
+ }
+ if(args.some(arg=>String(arg).endsWith('process-tree-watchdog.ts'))){
+  const child=fake();if(mode==='unconfirmed')setImmediate(()=>child.emit('close',1,null));
+  else child.stdin.once('finish',()=>setImmediate(()=>child.emit('close',1,null)));return child;
+ }
+ return spawn.apply(this,arguments);
+};
+cp.spawnSync=function(command,args,options){
+ if(/taskkill/i.test(command)&&args.includes(String(pid))){fs.appendFileSync(${JSON.stringify(callsFile)},JSON.stringify({timeout:options.timeout})+'\\n');return {status:null,signal:null,stdout:'',stderr:'',error:new Error('fixture stop timed out')};}
+ return spawnSync.apply(this,arguments);
+};
+process.kill=function(target,signal){if(Math.abs(target)===pid)throw new Error('fixture stop refused');return kill.call(this,target,signal);};
+require('node:module').syncBuiltinESMExports();
+`);
+            const output = spawnSync(process.execPath, [
+                "--import", pathToFileURL(join(repoRoot, "scripts", "real-tests", "typescript-source-loader.mjs")).href,
+                join(repoRoot, "scripts", "real-tests", "run.ts"), "--compact", "--json-summary-file", summaryFile, fixture,
+            ], { cwd: root, encoding: "utf8", timeout: 20000, windowsHide: true,
+                env: { ...process.env, NODE_OPTIONS: `--require="${preload.replace(/\\/g, "/")}"` } });
+            expect(output.error).toBeUndefined();
+            expect(output.status, output.stderr || output.stdout).toBe(1);
+            const summary = JSON.parse(readFileSync(summaryFile, "utf8"));
+            expect(summary.records).toEqual(expect.arrayContaining([
+                expect.objectContaining({ step: "provider prepared", status: "PASS" }),
+                expect.objectContaining({ step: "provider failed", status: "FAIL", reason: "fixture-primary-failure" }),
+                expect.objectContaining({ step: "watchdog completion", status: "FAIL" }),
+            ]));
+            expect(summary.toolCoverage.calls).toEqual(expect.arrayContaining([expect.objectContaining({ tool: "status", mcpSessionId: "fixture-session" })]));
+            expect(summary.mcpSessions).toEqual(expect.arrayContaining([expect.objectContaining({ id: "fixture-session" })]));
+            if (mode === "unconfirmed") {
+                expect(summary.records.find(record => record.step === "watchdog completion")).toMatchObject({ workerCloseConfirmed: false });
+                if (process.platform === "win32") {
+                    const calls = readFileSync(callsFile, "utf8").trim().split(/\r?\n/).map(line => JSON.parse(line));
+                    expect(calls.length).toBeGreaterThan(0);
+                    expect(calls.every(call => call.timeout === 5000)).toBe(true);
+                }
+            }
+        } finally { rmSync(root, { recursive: true, force: true }); }
+    });
+
     it("rejects unknown targets", () => {
         expect(() => hyperVTestFiles("macos")).toThrow(/all, windows, linux/);
     });

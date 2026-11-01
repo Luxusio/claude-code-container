@@ -416,6 +416,7 @@ function terminateProviderChild(child, force = false) {
         spawnSync("taskkill.exe", ["/pid", String(child.pid), "/t", "/f"], {
             stdio: "ignore",
             windowsHide: true,
+            timeout: 5000,
         });
         return;
     }
@@ -476,6 +477,8 @@ function uninstallProviderChildCleanup() {
 async function executeProviderModule(file: string) {
     const worker = resolve(dirname(fileURLToPath(import.meta.url)), "provider-worker.ts");
     const sourceLoader = pathToFileURL(resolve(dirname(fileURLToPath(import.meta.url)), "typescript-source-loader.mjs")).href;
+    let watchdogError: Error | null = null;
+    let workerCloseConfirmed = true;
     try {
         const child = spawn(process.execPath, ["--import", sourceLoader, worker, file], {
             cwd: process.cwd(),
@@ -485,11 +488,11 @@ async function executeProviderModule(file: string) {
             detached: process.platform !== "win32",
         });
         activeProviderChildren.add(child);
+        const chunks: Buffer[] = [];
+        let childError: Error | null = null;
+        let outputLimitExceeded = false;
         const outputPromise = new Promise<string>((resolvePromise, rejectPromise) => {
-            const chunks: Buffer[] = [];
             let outputBytes = 0;
-            let outputLimitExceeded = false;
-            let childError: Error | null = null;
             child.stdio[3]?.on("data", (chunk) => {
                 const buffer = Buffer.from(chunk);
                 outputBytes += buffer.length;
@@ -518,10 +521,22 @@ async function executeProviderModule(file: string) {
         });
         const watchdog = startProcessTreeWatchdog(child, { cwd: process.cwd(), env: process.env }, () => terminateProviderChild(child, true));
         let output: string;
-        let watchdogError: Error | null;
-        try { output = await outputPromise; }
-        finally { watchdogError = await watchdog.complete(); }
+        try {
+            const observed = await watchdog.waitForWorker(outputPromise);
+            workerCloseConfirmed = observed.confirmed;
+            if (observed.confirmed === true) output = observed.outcome;
+            else {
+                watchdogError = observed.error;
+                if (childError) throw childError;
+                if (outputLimitExceeded) throw new Error(`provider worker result exceeded ${MAX_PROVIDER_WORKER_RESULT_BYTES} bytes`);
+                output = Buffer.concat(chunks).toString("utf-8");
+            }
+        } finally {
+            const completionError = await watchdog.complete();
+            watchdogError ??= completionError;
+        }
         if (!output) {
+            if (watchdogError) throw watchdogError;
             return {
                 ok: false,
                 file,
@@ -533,7 +548,8 @@ async function executeProviderModule(file: string) {
         if (!parsed || typeof parsed !== "object" || parsed.file !== file || typeof parsed.ok !== "boolean") {
             throw new Error("provider worker returned an invalid result envelope");
         }
-        if (parsed.ok && watchdogError) throw watchdogError;
+        if (watchdogError) parsed.watchdogError = { message: watchdogError.message, stack: watchdogError.stack };
+        if (!workerCloseConfirmed) parsed.workerCloseConfirmed = false;
         return parsed;
     } catch (error) {
         return {
@@ -541,6 +557,8 @@ async function executeProviderModule(file: string) {
             file,
             name: file,
             error: { message: error?.message || String(error), stack: error?.stack },
+            ...(watchdogError ? { watchdogError: { message: watchdogError.message, stack: watchdogError.stack } } : {}),
+            ...(!workerCloseConfirmed ? { workerCloseConfirmed: false } : {}),
         };
     }
 }
@@ -686,6 +704,14 @@ function collectExecution(execution) {
             reason: error?.message || String(error),
         });
         console.error(`FAIL ${currentTestName} - ${compact ? compactMessage(error?.message || error) : (error?.stack || error?.message || String(error))}`);
+    } finally {
+        if (execution.watchdogError) {
+            const reason = execution.watchdogError.message;
+            recordStatus("FAIL");
+            records.push({ file, test: currentTestName, step: "watchdog completion", status: "FAIL", reason,
+                ...(execution.workerCloseConfirmed === false ? { workerCloseConfirmed: false } : {}) });
+            console.error(`FAIL ${currentTestName}: watchdog completion - ${compact ? compactMessage(reason) : reason}`);
+        }
     }
 }
 

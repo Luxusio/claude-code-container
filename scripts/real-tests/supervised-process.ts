@@ -72,13 +72,16 @@ export async function runSupervisedProcess(command: string, args: string[], opti
         }, options.timeout)
         : null;
 
+    let childError: Error | null = null;
     const outcomePromise = new Promise<any>((resolvePromise) => {
-        let error: Error | null = null;
-        child.once("error", cause => { error = cause; });
-        child.once("close", (status, signal) => resolvePromise({ status, signal, error }));
+        child.once("error", cause => { childError = cause; });
+        child.once("close", (status, signal) => resolvePromise({ status, signal, error: childError }));
     });
     const watchdog = startProcessTreeWatchdog(child, options, () => terminateChildTree(child, true));
-    const outcome = await outcomePromise;
+    const observed = await watchdog.waitForWorker(outcomePromise);
+    const outcome = observed.confirmed === true ? observed.outcome : {
+        status: child.exitCode, signal: child.signalCode, error: childError || observed.error,
+    };
     if (timer) clearTimeout(timer);
     for (const [signal, handler] of signalHandlers) process.removeListener(signal, handler);
     const watchdogError = await watchdog.complete();
@@ -90,6 +93,7 @@ export async function runSupervisedProcess(command: string, args: string[], opti
         stderr,
         error: outcome.error || (captureExceeded ? new Error("supervised process output exceeded capture limit") : null) || watchdogError,
         watchdogError,
+        workerCloseConfirmed: observed.confirmed,
         timedOut,
     };
 }

@@ -1259,12 +1259,12 @@ function gitLinkKind(gitPath: string): GitLinkKind {
 function isTrackedGitlink(repositoryPath: string, entryName: string): boolean {
     const result = spawnSync(
         "git",
-        ["ls-files", "--stage", "--", `:(literal)${entryName}`],
+        ["ls-files", "--stage", "-z", "--", `:(literal)${entryName}`],
         { cwd: repositoryPath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
     );
     if (result.error || result.status !== 0) return false;
     const matches = (result.stdout ?? "")
-        .split(/\r?\n/)
+        .split("\0")
         .filter((line) => {
             const match = line.match(/^160000 [0-9a-f]+ 0\t(.+)$/i);
             return match?.[1] === entryName;
@@ -1425,31 +1425,37 @@ function trackedSubmoduleGitDirectoryIsOwned(
     candidateName: string,
     candidatePath: string,
     inventoryRepository = parentRepository,
+    parentIdentity?: NestedRepositoryIdentity,
 ): boolean {
     if (!isTrackedGitlink(inventoryRepository, candidateName)) return false;
     const declaration = submoduleDeclarations(inventoryRepository, true)
         .find(({ path }) => path === candidateName);
     const storageName = declaration?.name ?? candidateName;
 
-    const gitDirectory = spawnSync(
-        "git",
-        ["rev-parse", "--git-dir"],
-        {
-            cwd: parentRepository,
-            encoding: "utf-8",
-            stdio: ["pipe", "pipe", "pipe"],
-        },
-    );
-    const gitDirectoryOutput = (gitDirectory.stdout ?? "").trim();
-    if (
-        gitDirectory.error
-        || gitDirectory.status !== 0
-        || !gitDirectoryOutput
-    ) return false;
+    let ownerGitDirectory: string;
+    if (parentIdentity) {
+        ownerGitDirectory = parentIdentity.gitDirectory.realpath;
+    } else {
+        const gitDirectory = spawnSync(
+            "git",
+            ["rev-parse", "--git-dir"],
+            {
+                cwd: parentRepository,
+                encoding: "utf-8",
+                stdio: ["pipe", "pipe", "pipe"],
+            },
+        );
+        const gitDirectoryOutput = (gitDirectory.stdout ?? "").trim();
+        if (
+            gitDirectory.error
+            || gitDirectory.status !== 0
+            || !gitDirectoryOutput
+        ) return false;
+        ownerGitDirectory = resolve(parentRepository, gitDirectoryOutput);
+    }
 
     const expectedGitDirectory = resolve(
-        parentRepository,
-        gitDirectoryOutput,
+        ownerGitDirectory,
         "modules",
         ...storageName.split("/"),
     );
@@ -1459,7 +1465,7 @@ function trackedSubmoduleGitDirectoryIsOwned(
     if (!match) return false;
     const actualGitDirectory = resolve(dirname(gitFile), match[1].trim());
     try {
-        const ownerGitDirectory = resolve(parentRepository, gitDirectoryOutput);
+        if (parentIdentity) assertNestedRepositoryIdentity(parentRepository, parentIdentity);
         const ownerGitRealpath = observedRealpath(ownerGitDirectory);
         let observedPath = ownerGitDirectory;
         for (const segment of ["modules", ...storageName.split("/")]) {
@@ -1474,7 +1480,9 @@ function trackedSubmoduleGitDirectoryIsOwned(
             observedRealpath(expectedGitDirectory),
         );
         if (relativePathEscapesRoot(relativeExpected)) return false;
-        return sameObservedPath(actualGitDirectory, expectedGitDirectory);
+        const owned = sameObservedPath(actualGitDirectory, expectedGitDirectory);
+        if (parentIdentity) assertNestedRepositoryIdentity(parentRepository, parentIdentity);
+        return owned;
     } catch {
         return false;
     }
@@ -1793,9 +1801,10 @@ function isOwnedTrackedWorkspaceRepository(
             parent ? name.slice(parent.name.length + 1) : name,
             sourcePath,
             parent?.path ?? workspacePath,
+            parentIdentity,
         )) return false;
         if (kind === "worktree" && gitLinkKind(join(sourceRoot, ".git")) !== "worktree") return false;
-        if (!isValidWorktree(entry.path, sourcePath)) return false;
+        if (!isValidWorktreeForNestedIdentity(entry.path, source)) return false;
         assertNestedRepositoryIdentity(sourcePath, source);
         assertNestedRepositoryIdentity(sourceParent, parentIdentity);
         for (const ancestor of ancestors) assertDirectoryIdentity(ancestor.path, ancestor.identity);

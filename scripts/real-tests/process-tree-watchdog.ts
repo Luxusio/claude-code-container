@@ -1,4 +1,5 @@
 import { spawnSync } from "child_process";
+import { WATCHDOG_TREE_ESCALATE_MS, WATCHDOG_TREE_TERMINATE_MS } from "./process-tree-watchdog-lifecycle.ts";
 
 const workerPid = Number(process.argv[2]);
 const parentPid = Number(process.argv[3]);
@@ -12,7 +13,7 @@ function terminateWorkerTree(force = false) {
         spawnSync("taskkill.exe", ["/pid", String(workerPid), "/t", "/f"], {
             stdio: "ignore",
             windowsHide: true,
-            timeout: 5000,
+            timeout: WATCHDOG_TREE_TERMINATE_MS,
         });
         return;
     }
@@ -49,7 +50,7 @@ function cleanAfterParentExit() {
     setTimeout(() => {
         terminateWorkerTree(true);
         process.exit(0);
-    }, 1000);
+    }, WATCHDOG_TREE_ESCALATE_MS);
 }
 
 const parentTimer = setInterval(() => {

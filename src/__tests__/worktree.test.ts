@@ -23,6 +23,9 @@ import { join, dirname, basename, posix, relative, resolve, delimiter } from "pa
 import { tmpdir } from "os";
 import { randomUUID } from "crypto";
 import { spawnSync } from "child_process";
+import childProcess from "child_process";
+import filesystem from "fs";
+import { syncBuiltinESMExports } from "node:module";
 import { pathToFileURL } from "url";
 import { NATIVE_RUNTIME_SELECTOR_KEYS } from "../ports/container-runtime-invocation.js";
 import {
@@ -8574,13 +8577,12 @@ describe("getWorktreeGitMounts", () => {
         }
     });
 
-    describe("workspace Gitlinks absent from the source's current index", () => {
+    describe.each(["services/catchy-api", "services/café"])("workspace Gitlinks absent from the source's current index (%s)", childPath => {
         let sourcePath: string;
         let sourceSubmodule: string;
         let workspacePath: string;
         let workspaceSubmodule: string;
         const branch = "source-inventory";
-        const childPath = "services/catchy-api";
 
         function git(cwd: string, args: string[]): string {
             const result = spawnSync("git", args, { cwd, encoding: "utf-8", stdio: "pipe" });
@@ -8610,8 +8612,8 @@ describe("getWorktreeGitMounts", () => {
             git(sourcePath, ["-c", "protocol.file.allow=always", "submodule", "add", origin, childPath]);
             git(sourcePath, ["commit", "-am", "add submodule"]);
             workspacePath = createWorkspace(sourcePath, branch).workspacePath;
-            sourceSubmodule = join(sourcePath, "services", "catchy-api");
-            workspaceSubmodule = join(workspacePath, "services", "catchy-api");
+            sourceSubmodule = join(sourcePath, ...childPath.split("/"));
+            workspaceSubmodule = join(workspacePath, ...childPath.split("/"));
             git(sourcePath, ["switch", baseBranch]);
             expect(git(sourcePath, ["ls-files", "--stage", "--", childPath])).toBe("");
             expect(isValidWorktree(workspaceSubmodule, sourceSubmodule)).toBe(true);
@@ -8625,9 +8627,12 @@ describe("getWorktreeGitMounts", () => {
         });
 
         it("projects tracked submodules from the target worktree index when its checkout metadata is stale", () => {
+            if (childPath === "services/café") {
+                expect(git(workspacePath, ["ls-files", "--stage", "--", childPath])).toContain('"services/caf\\303\\251"');
+            }
             const mounts = getWorktreeGitMounts(workspacePath, true,
                 "/project/source-inventory-root--source-inventory");
-            const workspaceSubmoduleGit = "/project/source-inventory-root--source-inventory/services/catchy-api/.git";
+            const workspaceSubmoduleGit = `/project/source-inventory-root--source-inventory/${childPath}/.git`;
             const commonGitDirectory = resolve(sourceSubmodule,
                 git(sourceSubmodule, ["rev-parse", "--git-common-dir"]).trim());
             expect(mounts.some(({ hostPath }) => hostPath === commonGitDirectory)).toBe(true);
@@ -8653,6 +8658,9 @@ describe("getWorktreeGitMounts", () => {
             expect(capture(), "readiness and CLI reopen preserve Git metadata, registrations, and working files").toEqual(before);
         });
 
+        // One Unicode row pins default Git path quoting; ownership refusals share the ASCII fixture.
+        if (childPath !== "services/catchy-api") return;
+
         it.each([false, true])("refuses a same-path foreign registered child (forged source metadata=%s)", forged => {
             git(sourceSubmodule, ["worktree", "remove", "--force", workspaceSubmodule]);
             const foreign = join(tmpDir, "foreign-source");
@@ -8668,6 +8676,119 @@ describe("getWorktreeGitMounts", () => {
             expect(() => assertWorkspaceReady(workspacePath, spawnSync, sourcePath)).toThrow(/owned|source|metadata/);
             expect(() => assertWorkspaceReady(workspacePath)).toThrow(/owned|source|metadata/);
             expect(capture(), "foreign registration and history remain untouched").toEqual(before);
+        });
+
+        it("binds registered-child validation to the source identity that passed storage qualification across an ABA swap", () => {
+            git(sourceSubmodule, ["worktree", "remove", "--force", workspaceSubmodule]);
+            const foreign = join(tmpDir, "foreign-race-source");
+            initRepo(foreign);
+            git(foreign, ["worktree", "add", "-b", "foreign-race-child", workspaceSubmodule]);
+            writeFileSync(join(workspaceSubmodule, "untracked.txt"), "foreign race work\n");
+            const sourceGit = join(sourceSubmodule, ".git");
+            const original = readFileSync(sourceGit, "utf-8");
+            const replacement = `gitdir: ${join(foreign, ".git")}\n`;
+            // The foreign registration really qualifies if the path is recaptured as B.
+            try {
+                overwriteGitFixtureFile(sourceGit, replacement);
+                expect(isValidWorktree(workspaceSubmodule, sourceSubmodule)).toBe(true);
+            } finally {
+                overwriteGitFixtureFile(sourceGit, original);
+            }
+            const before = capture();
+            const realRead = filesystem.readFileSync;
+            const realSpawn = childProcess.spawnSync;
+            let storageDeclarationObserved = false;
+            let swapped = false;
+            let foreignRegistryCompleted = false;
+            let restoredInsideValidation = false;
+            const spawn = vi.spyOn(childProcess, "spawnSync").mockImplementation(((...args: Parameters<typeof spawnSync>) => {
+                const result = realSpawn(...args);
+                const argv = args[1] as string[];
+                const options = args[2] as { cwd?: string; env?: NodeJS.ProcessEnv } | undefined;
+                if (argv[0] === "config" && argv.includes("--blob") && argv.includes(":.gitmodules")
+                    && options?.cwd === workspacePath) {
+                    storageDeclarationObserved = true;
+                }
+                if (swapped && argv[0] === "worktree" && argv[1] === "list"
+                    && options?.env?.GIT_DIR === join(foreign, ".git")) foreignRegistryCompleted = true;
+                return result;
+            }) as typeof spawnSync);
+            const read = vi.spyOn(filesystem, "readFileSync").mockImplementation(((...args: Parameters<typeof readFileSync>) => {
+                const contents = realRead(...args);
+                if (String(args[0]) === sourceGit && storageDeclarationObserved && !swapped) {
+                    // The storage check sees A; the old path-based inner capture next sees B.
+                    overwriteGitFixtureFile(sourceGit, replacement);
+                    swapped = true;
+                } else if (String(args[0]) === sourceGit && foreignRegistryCompleted && !restoredInsideValidation) {
+                    // Return B to its own inner assertion, but leave A for the outer assertion.
+                    overwriteGitFixtureFile(sourceGit, original);
+                    restoredInsideValidation = true;
+                }
+                return contents;
+            }) as typeof readFileSync);
+            syncBuiltinESMExports();
+            try {
+                expect(() => isWorktreeWorkspace(workspacePath)).toThrow(/owned|source|metadata/);
+                expect(storageDeclarationObserved).toBe(true);
+                expect(swapped, "the race occurs after A's storage qualification").toBe(true);
+            } finally {
+                read.mockRestore();
+                spawn.mockRestore();
+                syncBuiltinESMExports();
+                overwriteGitFixtureFile(sourceGit, original);
+            }
+            expect(capture(), "refusal retains both repositories' metadata, registrations, and working files").toEqual(before);
+        });
+
+        it("binds absorbed child storage to the captured parent when a native lookup briefly observes another parent", () => {
+            git(sourceSubmodule, ["worktree", "remove", "--force", workspaceSubmodule]);
+            const foreignParent = join(tmpDir, "foreign-storage-root");
+            initRepo(foreignParent);
+            git(foreignParent, ["-c", "protocol.file.allow=always", "submodule", "add",
+                join(tmpDir, "source-inventory-origin"), childPath]);
+            const foreignModule = join(foreignParent, ...childPath.split("/"));
+            git(foreignModule, ["worktree", "add", "-b", "foreign-parent-race", workspaceSubmodule]);
+            const foreignGit = join(foreignParent, ".git");
+            const foreignModuleGit = resolve(foreignModule, git(foreignModule, ["rev-parse", "--git-dir"]).trim());
+            overwriteGitFixtureFile(join(sourceSubmodule, ".git"), `gitdir: ${foreignModuleGit}\n`);
+            writeFileSync(join(workspaceSubmodule, "untracked.txt"), "foreign parent race work\n");
+            expect(isValidWorktree(workspaceSubmodule, sourceSubmodule)).toBe(true);
+            const before = capture();
+            const parentGit = join(sourcePath, ".git");
+            const heldParentGit = join(sourcePath, ".git-held-for-race");
+            const realSpawn = childProcess.spawnSync;
+            let mutableLookupDispatched = false;
+            const spawn = vi.spyOn(childProcess, "spawnSync").mockImplementation(((...args: Parameters<typeof spawnSync>) => {
+                const argv = args[1] as string[];
+                const options = args[2] as { cwd?: string } | undefined;
+                if (argv[0] !== "rev-parse" || argv[1] !== "--git-dir" || options?.cwd !== sourcePath) {
+                    return realSpawn(...args);
+                }
+                mutableLookupDispatched = true;
+                renameSync(parentGit, heldParentGit);
+                try {
+                    writeFileSync(parentGit, `gitdir: ${foreignGit}\n`);
+                    const result = realSpawn(...args);
+                    expect(result.status, String(result.stderr)).toBe(0);
+                    expect(resolve(sourcePath, String(result.stdout).trim())).toBe(foreignGit);
+                    return result;
+                } finally {
+                    rmSync(parentGit, { force: true });
+                    renameSync(heldParentGit, parentGit);
+                }
+            }) as typeof spawnSync);
+            syncBuiltinESMExports();
+            try {
+                let outcome: unknown;
+                try { outcome = isWorktreeWorkspace(workspacePath); }
+                catch (error) { outcome = error; }
+                expect(outcome, `mutable parent lookup dispatched: ${mutableLookupDispatched}`).toBeInstanceOf(Error);
+                expect((outcome as Error).message).toMatch(/owned|source|metadata/);
+            } finally {
+                spawn.mockRestore();
+                syncBuiltinESMExports();
+            }
+            expect(capture(), "the original parent, foreign storage, and both registrations remain unchanged").toEqual(before);
         });
 
         it.each(["absent", "symlink"] as const)("refuses %s same-relative source evidence", state => {

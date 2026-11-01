@@ -12119,7 +12119,7 @@ function androidHttpFixtureProcessRunning(pid: number): boolean {
     }
 }
 
-async function createAndroidHttpFixture(phase: AndroidHttpFixturePhase, helperOptions: { startupMs?: number; progressMode?: "invalid" | "partial-final" } = {}) {
+async function createAndroidHttpFixture(phase: AndroidHttpFixturePhase, helperOptions: { startupMs?: number; progressMode?: "invalid" | "partial-final"; delayInitialIdentity?: boolean } = {}) {
     // These held cleanup commands must hash the same Unicode argv through the
     // initial JSON identity probe and the native CIM termination helper.
     const root = mkdtempSync(join(tmpdir(), ['owner-cleanup', 'macos-owner-cleanup'].includes(phase)
@@ -12144,6 +12144,27 @@ async function createAndroidHttpFixture(phase: AndroidHttpFixturePhase, helperOp
 const androidHttpInventorySpawn = cp.spawn;
 const androidHttpNativeSpawnSync = cp.spawnSync;
 const androidHttpNativeExecFile = cp.execFile;
+const androidHttpWorkerData = require('node:worker_threads').workerData;
+const androidHttpIdentityWindow = ${JSON.stringify(phase === 'owner-cleanup' && helperOptions.delayInitialIdentity === true)}
+    && process.platform === 'win32' && androidHttpWorkerData?.admissionShared && androidHttpWorkerData?.shared
+    && androidHttpWorkerData.payload?.args?.at(-2) === 'emu' && androidHttpWorkerData.payload?.args?.at(-1) === 'kill'
+    ? {control: new Int32Array(androidHttpWorkerData.shared, 0, 4)} : null;
+if (androidHttpIdentityWindow) {
+    const originalCompareExchange = Atomics.compareExchange;
+    Atomics.compareExchange = function(array, index, expected, replacement) {
+        const ownAdmission = array.buffer === androidHttpWorkerData.admissionShared && array.byteOffset === 0 && array.length === 5 && index === 0;
+        const observedAt = performance.now();
+        const result = originalCompareExchange.apply(this, arguments);
+        if (ownAdmission && expected === 0 && replacement === 1 && result === 0) androidHttpIdentityWindow.requestedAt = observedAt;
+        if (ownAdmission && expected === 2 && replacement === 3 && result === 2) {
+            androidHttpIdentityWindow.commandMs = Atomics.load(array, 1);
+            androidHttpIdentityWindow.completionMs = Atomics.load(array, 2);
+            androidHttpIdentityWindow.commandDeadlineAt = androidHttpIdentityWindow.requestedAt + androidHttpIdentityWindow.commandMs;
+            androidHttpIdentityWindow.completionDeadlineAt = androidHttpIdentityWindow.requestedAt + androidHttpIdentityWindow.completionMs;
+        }
+        return result;
+    };
+}
 cp.execFile = function(command, args = [], options = {}, callback) {
     const script = args.at(-1);
     const identityPid = ${JSON.stringify(phase === 'owner-cleanup')} && path.win32.basename(command).toLowerCase() === 'powershell.exe'
@@ -12151,11 +12172,27 @@ cp.execFile = function(command, args = [], options = {}, callback) {
     if (!identityPid || typeof callback !== 'function') return androidHttpNativeExecFile.apply(this, arguments);
     const startedAt = performance.now();
     return androidHttpNativeExecFile.call(this, command, args, options, function(error, stdout, stderr) {
-        fs.appendFileSync(path.join(process.env.HOME, 'cleanup-native.log'), JSON.stringify({
-            kind: 'initial-identity', pid: Number(identityPid[1]), timeoutMs: options.timeout,
-            elapsedMs: performance.now() - startedAt, status: error ? error.code : 0,
-        }) + '\\n');
-        return callback.call(this, error, stdout, stderr);
+        const nativeCompletedAt = performance.now(), receiver = this;
+        const window = androidHttpIdentityWindow && Number(identityPid[1]) === Atomics.load(androidHttpIdentityWindow.control, 2)
+            ? androidHttpIdentityWindow : null;
+        const deliver = () => {
+            fs.appendFileSync(path.join(process.env.HOME, 'cleanup-native.log'), JSON.stringify({
+                kind: 'initial-identity', pid: Number(identityPid[1]), timeoutMs: options.timeout,
+                elapsedMs: nativeCompletedAt - startedAt, status: error ? error.code : 0,
+                ...(window ? {admissionRequestedAt: window.requestedAt, admissionCommandMs: window.commandMs,
+                    admissionCompletionMs: window.completionMs, commandDeadlineAt: window.commandDeadlineAt,
+                    completionDeadlineAt: window.completionDeadlineAt, queryStartedAt: startedAt,
+                    nativeCompletedAt, callbackDeliveredAt: performance.now()} : {}),
+            }) + '\\n');
+            return callback.call(receiver, error, stdout, stderr);
+        };
+        // Keep the real query and its result. Delay only callback delivery into
+        // the original C/K window, leaving most of its cleanup reserve intact.
+        if (window) {
+            const releaseAt = window.commandDeadlineAt + (window.completionMs - window.commandMs) / 32;
+            return setTimeout(deliver, Math.max(0, releaseAt - performance.now()));
+        }
+        return deliver();
     });
 };
 cp.spawnSync = function(command, args = [], options = {}) {
@@ -12166,6 +12203,7 @@ cp.spawnSync = function(command, args = [], options = {}) {
         if (identityPid || treePid && script.includes('CCC_WINDOWS_TERMINATE_COMMAND_HASH')) {
             fs.appendFileSync(path.join(process.env.HOME, 'cleanup-native.log'), JSON.stringify({
                 kind: identityPid ? 'identity' : 'qualified-tree', pid: Number(identityPid?.[1] || treePid),
+                startToken: options.env?.CCC_WINDOWS_TERMINATE_START_TOKEN,
                 commandHash: options.env?.CCC_WINDOWS_TERMINATE_COMMAND_HASH, timeoutMs: options.timeout,
             }) + '\\n');
         }
@@ -12390,7 +12428,7 @@ describe('emitted default-runner Android HTTP responsiveness', () => {
     });
 
     it('charges owner cleanup native stop and fallback to its captured allowance while retaining committed auxiliary facts', {timeout: 30000}, async () => {
-        const fixture = await createAndroidHttpFixture('owner-cleanup');
+        const fixture = await createAndroidHttpFixture('owner-cleanup', {delayInitialIdentity: true});
         try {
             const startedAt = performance.now();
             const cleanup = fixture.rpc(0, 'broker.cleanup.owner', {backend: 'android-emulator', stopDevices: true});
@@ -12421,12 +12459,24 @@ describe('emitted default-runner Android HTTP responsiveness', () => {
                 expect(initialCalls[0].elapsedMs).toBeGreaterThanOrEqual(0);
                 expect(initialCalls[0].timeoutMs).toBeGreaterThan(0);
                 expect(initialCalls[0].timeoutMs).toBeLessThanOrEqual(2000);
+                expect(initialCalls[0].admissionCommandMs).toBeGreaterThan(0);
+                expect(initialCalls[0].admissionCompletionMs).toBeGreaterThan(initialCalls[0].admissionCommandMs);
+                expect(initialCalls[0].admissionCompletionMs).toBeLessThanOrEqual(2000);
+                expect(initialCalls[0].queryStartedAt).toBeLessThan(initialCalls[0].commandDeadlineAt);
+                expect(initialCalls[0].callbackDeliveredAt).toBeGreaterThan(initialCalls[0].commandDeadlineAt);
+                expect(initialCalls[0].callbackDeliveredAt).toBeLessThan(initialCalls[0].completionDeadlineAt);
                 const ownedCleanupCalls = cleanupCalls.filter(call => call.pid === nativePid && call.kind === 'qualified-tree');
                 expect(ownedCleanupCalls).toEqual([expect.objectContaining({
-                    kind: 'qualified-tree', commandHash: expect.stringMatching(/^[a-f0-9]{64}$/), timeoutMs: expect.any(Number),
+                    kind: 'qualified-tree', startToken: expect.stringMatching(/^windows:/),
+                    commandHash: expect.stringMatching(/^[a-f0-9]{64}$/), timeoutMs: expect.any(Number),
                 })]);
                 expect(ownedCleanupCalls[0].timeoutMs).toBeGreaterThan(0);
                 expect(ownedCleanupCalls[0].timeoutMs).toBeLessThanOrEqual(2000);
+                expect(ownedCleanupCalls[0].timeoutMs).toBeLessThanOrEqual(Math.ceil(initialCalls[0].completionDeadlineAt - initialCalls[0].callbackDeliveredAt));
+                expect(execution.cleanup).toMatchObject({attempted: true, ok: true, pid: nativePid});
+                expect(execution.error).toContain('timed out');
+                expect(execution.stdout).toBe('');
+                expect(execution.stderr).toBe('');
             }
             expect(fixture.records()).toEqual([expect.objectContaining({...fixture.initial, appium: null, status: 'running'})]);
             expect(fixture.nativeCalls().filter(call => call.tool === 'adb' && call.args.at(-1) === 'kill')).toHaveLength(1);

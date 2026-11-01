@@ -13,9 +13,10 @@ import { runSupervisedProcess } from "./supervised-process.ts";
 vi.mock("child_process", async original => ({ ...await original<typeof import("child_process")>() }));
 
 function fakeChild(pid = 1234) {
+    const streams = Array.from({ length: 3 }, () => Object.assign(new PassThrough(), { unref: vi.fn() }));
     return Object.assign(new EventEmitter(), {
         pid, exitCode: null as number | null, signalCode: null,
-        stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(),
+        stdin: streams[0], stdout: streams[1], stderr: streams[2], stdio: streams,
         unref: vi.fn(), kill: vi.fn(() => true),
     }) as unknown as ChildProcess;
 }
@@ -90,6 +91,38 @@ describe("real-test watchdog completion", () => {
         expect(f.stopped).not.toHaveBeenCalled();
     });
 
+    it("does not add a deadline to a protected worker", async () => {
+        vi.useFakeTimers();
+        const f = watchdogFixture();
+        let resolveWorker: (value: number) => void;
+        let finished = false;
+        const observed = f.lifecycle.waitForWorker(new Promise<number>(resolve => { resolveWorker = resolve; }))
+            .then(value => { finished = true; return value; });
+        await vi.advanceTimersByTimeAsync(60 * 60 * 1000);
+        expect(finished).toBe(false);
+        resolveWorker(7);
+        expect(await observed).toEqual({ confirmed: true, outcome: 7 });
+        const completion = f.lifecycle.complete();
+        f.watchdog.emit("close", 0, null);
+        expect(await completion).toBeNull();
+    });
+
+    it("sends EOF without completion when worker close remains unconfirmed", async () => {
+        vi.useFakeTimers();
+        const f = watchdogFixture();
+        const end = vi.spyOn(f.watchdog.stdin, "end");
+        const observed = f.lifecycle.waitForWorker(new Promise<void>(() => {}));
+        f.watchdog.stdin.emit("error", new Error("watchdog input failed"));
+        await vi.advanceTimersByTimeAsync(5000);
+        expect(await observed).toMatchObject({ confirmed: false });
+        const completion = f.lifecycle.complete();
+        expect(end).toHaveBeenCalledExactlyOnceWith(undefined);
+        await vi.advanceTimersByTimeAsync(11000);
+        expect(f.watchdog.kill).not.toHaveBeenCalled();
+        f.watchdog.emit("close", 0, null);
+        expect(await completion).toMatchObject({ message: "watchdog input failed" });
+    });
+
     it.each(["error", "throw"])("preserves the worker failure when completion input has an %s", async source => {
         const child = fakeChild();
         const watchdog = fakeChild();
@@ -101,7 +134,7 @@ describe("real-test watchdog completion", () => {
         child.emit("error", primary);
         Object.assign(child, { exitCode: 7 });
         child.emit("close", 7, null);
-        await Promise.resolve();
+        await new Promise(resolve => setImmediate(resolve));
         if (source === "error") watchdog.stdin.emit("error", secondary);
         watchdog.emit("close", 1, null);
         expect(await result).toMatchObject({ status: 7, error: primary, watchdogError: secondary });
@@ -114,9 +147,30 @@ describe("real-test watchdog completion", () => {
         const result = runSupervisedProcess("fixture", [], { capture: true });
         Object.assign(child, { exitCode: 0 });
         child.emit("close", 0, null);
-        await Promise.resolve();
+        await new Promise(resolve => setImmediate(resolve));
         watchdog.emit("close", 1, null);
         expect(await result).toMatchObject({ status: 1, error: { message: "process tree watchdog failed: 1" } });
+    });
+
+    it.each([false, true])("bounds an unprotected worker that never closes while retaining a prior error=%s", async priorError => {
+        vi.useFakeTimers();
+        const child = fakeChild();
+        const watchdog = fakeChild();
+        vi.spyOn(childProcess, "spawn").mockReturnValueOnce(child).mockReturnValueOnce(watchdog);
+        vi.spyOn(childProcess, "spawnSync").mockReturnValue({ status: null, error: new Error("stop failed") } as any);
+        vi.spyOn(process, "kill").mockImplementation(() => { throw new Error("stop failed"); });
+        const primary = new Error("worker failed before close");
+        const result = runSupervisedProcess("fixture", [], { capture: true });
+        if (priorError) child.emit("error", primary);
+        watchdog.emit("close", 1, null);
+        await vi.advanceTimersByTimeAsync(5000);
+        const observed = await result;
+        expect(observed).toMatchObject({ status: null, signal: null, workerCloseConfirmed: false });
+        if (priorError) expect(observed.error).toBe(primary);
+        else expect(observed.error.message).toBe("worker close could not be confirmed after process tree watchdog failure");
+        expect(child.unref).toHaveBeenCalledOnce();
+        expect((child.stdout as any).unref).toHaveBeenCalledOnce();
+        expect(child.exitCode).toBeNull();
     });
 
     it("releases its temporary cwd before runSupervisedProcess returns", async () => {
