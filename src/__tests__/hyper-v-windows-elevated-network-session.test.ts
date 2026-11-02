@@ -1,12 +1,38 @@
-import { readFileSync } from "fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { createHash } from "crypto";
 import { EventEmitter } from "events";
 import { join } from "path";
+import { tmpdir } from "os";
 import { pathToFileURL } from "url";
 import { describe, expect, it, vi } from "vitest";
 
-const childProcessMocks = vi.hoisted(() => ({ spawn: vi.fn() }));
+const childProcessMocks = vi.hoisted(() => ({
+    spawn: vi.fn(),
+    captureStageDirectories: false,
+    stageDirectories: [] as string[],
+    stageWriteError: null as Error | null,
+    afterStageWrite: null as (() => void) | null,
+}));
 
 vi.mock("child_process", () => ({ spawn: childProcessMocks.spawn }));
+vi.mock("fs", async (importOriginal) => {
+    const original = await importOriginal<typeof import("fs")>();
+    return {
+        ...original,
+        mkdtempSync(...args: Parameters<typeof original.mkdtempSync>) {
+            const directory = original.mkdtempSync(...args);
+            if (childProcessMocks.captureStageDirectories) {
+                childProcessMocks.stageDirectories.push(String(directory));
+            }
+            return directory;
+        },
+        writeFileSync(...args: Parameters<typeof original.writeFileSync>) {
+            if (childProcessMocks.stageWriteError) throw childProcessMocks.stageWriteError;
+            original.writeFileSync(...args);
+            childProcessMocks.afterStageWrite?.();
+        },
+    };
+});
 vi.mock("@ccc/device-lab/windows-system-powershell.js", async (importOriginal) => ({
     ...await importOriginal<typeof import("@ccc/device-lab/windows-system-powershell.js")>(),
     canonicalWindowsPowerShellPath: () => "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
@@ -2129,9 +2155,10 @@ describe("callback-scoped elevated Hyper-V network session", () => {
         const approvalIndex = HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP.indexOf(
             "CCC_HYPER_V_ELEVATED_NETWORK_APPROVE",
         );
-        const runAsIndex = HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP.indexOf("-Verb RunAs");
+        const runAsIndex = HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP.indexOf("[Diagnostics.Process]::Start($SI)");
 
-        expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP).toContain("-Verb RunAs");
+        expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP).toContain("$SI.Verb='RunAs'");
+        expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP).toContain("$SI.UseShellExecute=$true");
         expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP).toContain("S-1-5-32-544");
         expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP).toContain("GetNamedPipeClientProcessId");
         expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP).toContain("startTicks");
@@ -2150,8 +2177,16 @@ describe("callback-scoped elevated Hyper-V network session", () => {
             "CCC_HYPER_V_ELEVATED_NETWORK_TERMINAL:",
         );
         expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP).not.toContain("\0");
-        expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP.length).toBeLessThan(8_000);
-        expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP.match(/-Verb RunAs/g)).toHaveLength(1);
+        // Node launches this relay directly with CreateProcessW, whose command-line limit is
+        // 32,767 UTF-16 code units including NUL. Doubling each argument bounds every possible
+        // quote/backslash escape; three more units cover quotes and a separating space.
+        const relayArguments = [
+            executable, "-WindowStyle", "Hidden", "-NoLogo", "-NoProfile", "-NonInteractive",
+            "-ExecutionPolicy", "Bypass", "-Command", HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP,
+        ];
+        const quotedCommandLineUpperBound = relayArguments.reduce((length, argument) => length + 2 * argument.length + 3, 1);
+        expect(quotedCommandLineUpperBound).toBeLessThanOrEqual(32_767);
+        expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP.match(/\.Verb='RunAs'/g)).toHaveLength(1);
         expect(requestIndex).toBeGreaterThanOrEqual(0);
         expect(approvalIndex).toBeGreaterThan(requestIndex);
         expect(runAsIndex).toBeGreaterThan(approvalIndex);
@@ -2244,26 +2279,54 @@ describe("callback-scoped elevated Hyper-V network session", () => {
         expect(command).toContain('process.platform === "win32" ? ["--require-parser"] : []');
     });
 
-    it("classifies a declined UAC prompt from the wrapped Win32 exception, not the outer one", () => {
-        const launch = HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP
-            .split(";")
-            .find((statement) => statement.includes("-Verb RunAs"));
-        const relayCatch = HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP.slice(
-            HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP.indexOf("-Verb RunAs"),
-            HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP.indexOf("throw 'launch'"),
+    it.skipIf(process.platform !== "win32").each([
+        { native: 1223, expected: "cancelled" },
+        { native: 5, expected: "launch" },
+        { native: null, expected: "launch" },
+    ])("classifies native RunAs failure $native without a cmdlet losing its identity", async ({ native, expected }) => {
+        const { spawnSync } = await vi.importActual<typeof import("child_process")>("child_process");
+        const nativePowerShell = await vi.importActual<typeof import("@ccc/device-lab/windows-system-powershell.js")>(
+            "@ccc/device-lab/windows-system-powershell.js",
         );
-
-        expect(launch).toBeTruthy();
-        // Start-Process wraps the ShellExecute Win32Exception; the outer exception never has 1223.
-        expect(relayCatch).toContain("$UE=$_.Exception;while($UE-and -not ($UE-is [ComponentModel.Win32Exception])){$UE=$UE.InnerException}");
-        expect(relayCatch).toContain("if($UE-and $UE.NativeErrorCode-eq 1223){throw 'cancelled'}");
-        expect(relayCatch).not.toContain("$_.Exception-is [ComponentModel.Win32Exception]");
+        const interpreter = nativePowerShell.canonicalWindowsPowerShellPath();
+        if (!interpreter) throw new Error("Canonical Windows PowerShell unavailable");
+        const nativeStart = "[Diagnostics.Process]::Start($SI)";
+        const call = HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP.indexOf(nativeStart);
+        const start = HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP.lastIndexOf("try{", call);
+        const end = HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP.indexOf(";Note 'runas-returned'", call);
+        expect(call).toBeGreaterThanOrEqual(0);
+        expect(start).toBeGreaterThanOrEqual(0);
+        expect(end).toBeGreaterThan(call);
+        // Execute the real relay's classifier. Replace only its native launch boundary, so this
+        // fixture cannot request UAC or start an elevated process.
+        const replacement = native === null ? "$null"
+            : `(& { throw [ComponentModel.Win32Exception]::new(${native}) })`;
+        const boundary = HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP.slice(start, end)
+            .replace(nativeStart, replacement);
+        const directory = mkdtempSync(join(tmpdir(), "ccc-runas-classifier-"));
+        const scriptPath = join(directory, "failure.ps1");
+        try {
+            writeFileSync(scriptPath, Buffer.concat([
+                Buffer.from([0xff, 0xfe]),
+                Buffer.from(`$ErrorActionPreference='Stop';try{${boundary}}catch{[Console]::Out.WriteLine($_.Exception.Message)}`, "utf16le"),
+            ]));
+            const result = spawnSync(interpreter, [
+                "-NoLogo", "-NoProfile", "-NonInteractive", "-File", scriptPath,
+            ], { encoding: "utf8", windowsHide: true, timeout: 10_000 });
+            expect(result.error, result.stderr).toBeUndefined();
+            expect(result.status, result.stderr).toBe(0);
+            expect(result.stdout.trim()).toBe(expected);
+        } finally {
+            rmSync(directory, { recursive: true, force: true });
+        }
     });
 
-    it.each([undefined, 2_147_483_647])("encodes the elevated child directly within the launch limit and exposes it for parsing (duration %s)", (maximumDurationMilliseconds) => {
+    it.each([undefined, 2_147_483_647])("exposes the staged loader and unchanged child for parsing (duration %s)", (maximumDurationMilliseconds) => {
         const { loader, child } = hyperVElevatedNetworkChildPrograms(maximumDurationMilliseconds);
 
-        expect(loader).toBe(child);
+        expect(loader).not.toBe(child);
+        expect(loader).not.toContain("GzipStream");
+        expect(loader.length).toBeLessThan(8_000);
         expect(child).not.toContain("GzipStream");
         expect(child).not.toContain("ReadToEnd()");
         const encoded = Buffer.from(child, "utf16le").toString("base64");
@@ -2278,6 +2341,73 @@ describe("callback-scoped elevated Hyper-V network session", () => {
         // `[Console]::Out.AutoFlush` throws in the elevated child after a successful handshake.
         expect(child).toContain("$W.AutoFlush=$true;[Console]::SetIn($R);[Console]::SetOut($W)");
         expect(child).not.toContain("[Console]::Out.AutoFlush");
+    });
+
+    it.skipIf(process.platform !== "win32").each([
+        "valid",
+        "replaced",
+        "truncated",
+        "oversized",
+        "wrong-bom",
+        "invalid-utf16",
+    ] as const)("runs only the exact verified staged bytes on Windows (%s)", async (variant) => {
+        const { spawnSync } = await vi.importActual<typeof import("child_process")>("child_process");
+        const nativePowerShell = await vi.importActual<typeof import("@ccc/device-lab/windows-system-powershell.js")>(
+            "@ccc/device-lab/windows-system-powershell.js",
+        );
+        const interpreter = nativePowerShell.canonicalWindowsPowerShellPath();
+        if (!interpreter) throw new Error("Canonical Windows PowerShell unavailable");
+        const directory = mkdtempSync(join(tmpdir(), "ccc-stage ' 한글 -"));
+        const path = join(directory, "child's code.ps1");
+        const loaderPath = join(directory, "loader.ps1");
+        const marker = "ccc-stage-fixture-ok";
+        const original = Buffer.concat([
+            Buffer.from([0xff, 0xfe]),
+            Buffer.from(`[Console]::Out.WriteLine('${marker}')`, "utf16le"),
+        ]);
+        let expected = original;
+        let staged = original;
+        if (variant === "replaced") {
+            staged = Buffer.from(original);
+            staged[staged.length - 4] = original[original.length - 4]! ^ 1;
+        } else if (variant === "truncated") staged = original.subarray(0, original.length - 2);
+        else if (variant === "oversized") staged = Buffer.concat([original, Buffer.from([0, 0])]);
+        else if (variant === "wrong-bom") {
+            staged = Buffer.from(original);
+            staged[0] = 0xfe;
+            staged[1] = 0xff;
+            expected = staged;
+        } else if (variant === "invalid-utf16") {
+            staged = Buffer.from([0xff, 0xfe, 0x00, 0xd8]);
+            expected = staged;
+        }
+        try {
+            writeFileSync(path, staged);
+            const { loader } = hyperVElevatedNetworkChildPrograms(10_000, {
+                path,
+                sha256: createHash("sha256").update(expected).digest("hex"),
+                byteLength: expected.length,
+            });
+            // File delivery also keeps this regression independent of the inline-launch failure
+            // that motivated staging. No UAC or Hyper-V operation is involved in this fixture.
+            writeFileSync(loaderPath, Buffer.concat([
+                Buffer.from([0xff, 0xfe]),
+                Buffer.from(loader, "utf16le"),
+            ]));
+            const result = spawnSync(interpreter, [
+                "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", loaderPath,
+            ], { encoding: "utf8", windowsHide: true, timeout: 15_000 });
+            expect(result.error, result.stderr).toBeUndefined();
+            if (variant === "valid") {
+                expect(result.status, result.stderr).toBe(0);
+                expect(result.stdout.trim()).toBe(marker);
+            } else {
+                expect(result.status, result.stderr).not.toBe(0);
+                expect(result.stdout).not.toContain(marker);
+            }
+        } finally {
+            rmSync(directory, { recursive: true, force: true });
+        }
     });
 
     it.for([
@@ -2888,6 +3018,65 @@ describe("elevated network acquisition settlement", () => {
         });
         return Object.assign(events, { stdin, stdout, stderr, kill: vi.fn(() => true) });
     }
+
+    it.each([
+        "success",
+        "cancelled",
+        "write-failure",
+        "spawn-failure",
+        "expired-during-staging",
+    ] as const)("removes only its owned temporary stage after %s", async (outcome) => {
+        const unrelatedDirectory = mkdtempSync(join(tmpdir(), "ccc-unrelated-stage-"));
+        const unrelated = join(unrelatedDirectory, "keep.txt");
+        writeFileSync(unrelated, "unrelated content");
+        const beforeElevation = vi.fn();
+        let monotonic = 0;
+        childProcessMocks.spawn.mockReset();
+        childProcessMocks.stageDirectories.length = 0;
+        childProcessMocks.captureStageDirectories = true;
+        if (outcome === "write-failure") childProcessMocks.stageWriteError = new Error("injected stage write failure");
+        if (outcome === "expired-during-staging") childProcessMocks.afterStageWrite = () => { monotonic = 30_001; };
+        if (outcome === "spawn-failure") {
+            childProcessMocks.spawn.mockImplementationOnce(() => { throw new Error("injected spawn failure"); });
+        } else {
+            childProcessMocks.spawn.mockImplementationOnce(() => {
+                expect(childProcessMocks.stageDirectories).toHaveLength(1);
+                expect(existsSync(childProcessMocks.stageDirectories[0]!)).toBe(true);
+                return scriptedRelayChild(outcome === "cancelled" ? "hyper-v-network-elevation-cancelled" : "approve");
+            });
+        }
+        try {
+            const result = await withElevatedHyperVNetworkExecutor({
+                executable,
+                deadlineUnixMilliseconds: Date.now() + 30_000,
+                maximumDurationMilliseconds: 30_000,
+                monotonicNow: () => monotonic,
+                onBeforeElevation: beforeElevation,
+            }, (executor) => executor.execute(getVmRequest(), executorContext()));
+            if (outcome === "success") expect(result).toMatchObject({ status: 0 });
+            else expect(result).toMatchObject({
+                status: null,
+                error: outcome === "cancelled" ? "hyper-v-network-elevation-cancelled"
+                    : outcome === "expired-during-staging" ? "hyper-v-network-elevation-deadline-exceeded"
+                        : "hyper-v-network-elevation-relay-spawn-failed",
+            });
+            expect(childProcessMocks.stageDirectories).toHaveLength(1);
+            for (const directory of childProcessMocks.stageDirectories) expect(existsSync(directory)).toBe(false);
+            expect(readFileSync(unrelated, "utf8")).toBe("unrelated content");
+            const enteredRelay = outcome === "success" || outcome === "cancelled";
+            expect(beforeElevation).toHaveBeenCalledTimes(enteredRelay ? 1 : 0);
+            expect(childProcessMocks.spawn).toHaveBeenCalledTimes(
+                outcome === "write-failure" || outcome === "expired-during-staging" ? 0 : 1,
+            );
+        } finally {
+            childProcessMocks.stageWriteError = null;
+            childProcessMocks.afterStageWrite = null;
+            childProcessMocks.captureStageDirectories = false;
+            for (const directory of childProcessMocks.stageDirectories) rmSync(directory, { recursive: true, force: true });
+            childProcessMocks.stageDirectories.length = 0;
+            rmSync(unrelatedDirectory, { recursive: true, force: true });
+        }
+    });
 
     it.each([-86_400_000, 86_400_000])("refreshes approval from the original duration after a %i ms launch transport wall jump", async (wallJump) => {
         const wall = 2_000_000_000_000;

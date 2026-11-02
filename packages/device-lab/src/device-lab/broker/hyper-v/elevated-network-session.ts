@@ -1,5 +1,10 @@
 import { spawn } from "child_process";
-import { randomBytes } from "crypto";
+import { createHash, randomBytes } from "crypto";
+import { closeSync, fstatSync, lstatSync, mkdtempSync, openSync, rmdirSync, unlinkSync, writeFileSync, type BigIntStats } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
+
+import { readDeviceLabFileIdentity } from "../../../device-lab-file-identity.js";
 
 import {
     canonicalWindowsPowerShellPath,
@@ -588,6 +593,116 @@ function encodedPowerShell(source: string): string {
     return Buffer.from(source, "utf16le").toString("base64");
 }
 
+type ElevatedChildStage = {
+    readonly path: string;
+    readonly sha256: string;
+    readonly byteLength: number;
+};
+
+function stagedChildBytes(source: string): Buffer {
+    return Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(source, "utf16le")]);
+}
+
+function stageElevatedChild(source: string): ElevatedChildStage & { readonly cleanup: () => boolean } {
+    const directory = mkdtempSync(join(tmpdir(), "ccc-hyper-v-network-"));
+    const path = join(directory, "child.ps1");
+    let directoryIdentity: BigIntStats | undefined;
+    let fileIdentity: BigIntStats | undefined;
+    let created = false;
+    let cleaned = false;
+    const cleanup = (): boolean => {
+        if (cleaned) return true;
+        try {
+            if (!directoryIdentity) return false;
+            const current = lstatSync(directory, { bigint: true });
+            if (!current.isDirectory() || current.isSymbolicLink() || current.ino <= 0n
+                || current.ino !== directoryIdentity.ino || current.dev !== directoryIdentity.dev) return false;
+            if (created) {
+                try {
+                    if (!fileIdentity) return false;
+                    readDeviceLabFileIdentity(path, "hyper-v-network-stage", fileIdentity);
+                    unlinkSync(path);
+                } catch (error) {
+                    if ((error as NodeJS.ErrnoException).code !== "ENOENT") return false;
+                }
+            }
+            // Never recursively remove a user-writable temporary pathname.
+            rmdirSync(directory);
+            cleaned = true;
+            return true;
+        } catch (error) {
+            return (error as NodeJS.ErrnoException).code === "ENOENT";
+        }
+    };
+    const bytes = stagedChildBytes(source);
+    try {
+        directoryIdentity = lstatSync(directory, { bigint: true });
+        if (!directoryIdentity.isDirectory() || directoryIdentity.isSymbolicLink() || directoryIdentity.ino <= 0n) {
+            throw new Error("hyper-v-network-stage-directory-invalid");
+        }
+        const descriptor = openSync(path, "wx", 0o600);
+        created = true;
+        try {
+            writeFileSync(descriptor, bytes);
+        } finally {
+            try { fileIdentity = fstatSync(descriptor, { bigint: true }); }
+            finally { closeSync(descriptor); }
+        }
+        readDeviceLabFileIdentity(path, "hyper-v-network-stage", fileIdentity);
+        return { path, sha256: createHash("sha256").update(bytes).digest("hex"), byteLength: bytes.length, cleanup };
+    } catch (error) {
+        if (!cleanup()) {
+            throw new AggregateError([error, new Error("hyper-v-network-stage-cleanup-failed")],
+                "hyper-v-network-stage-preparation-failed", { cause: error });
+        }
+        throw error;
+    }
+}
+
+function quoteWindowsProcessArgument(value: string): string {
+    // ProcessStartInfo receives a C-runtime argument line, not cmd.exe or PowerShell quoting.
+    const escaped = value.replace(/(\\*)"/g, (_match, slashes: string) => `${slashes}${slashes}\\"`)
+        .replace(/\\+$/, (slashes) => `${slashes}${slashes}`);
+    return `"${escaped}"`;
+}
+
+function elevatedChildLoaderSource(
+    stage: ElevatedChildStage,
+    deadlineUnixMilliseconds: number,
+    maximumDurationMilliseconds?: number,
+): string {
+    // Preserve the existing 8,000-character Base64 child limit, plus its UTF-16 BOM.
+    if (!Number.isInteger(stage.byteLength) || stage.byteLength < 2 || stage.byteLength > 6_002
+        || stage.byteLength % 2 !== 0 || !/^[a-f0-9]{64}$/.test(stage.sha256)
+        || stage.path.includes("\0")) throw new HyperVElevatedNetworkSessionError("hyper-v-network-elevation-protocol-invalid");
+    return [
+        "$ErrorActionPreference='Stop'",
+        `$CccStagePath='${stage.path.replace(/'/g, "''")}'`,
+        `$CccStageDigest='${stage.sha256}'`,
+        `$CccStageLength=${stage.byteLength}`,
+        `$CccStageBudget=[long]${maximumDurationMilliseconds ?? -1}`,
+        `if($CccStageBudget-lt 0){$CccStageBudget=[long]${deadlineUnixMilliseconds}-[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()}`,
+        "if($CccStageBudget-le 0){throw 'deadline'};$CccStageClock=[Diagnostics.Stopwatch]::StartNew()",
+        "$CccStageWatch=$null;$CccStageStream=$null",
+        "try{",
+        // Bound file opening as well as reading: a replaced parent can redirect even a short read.
+        "$CccStageSelf=[Diagnostics.Process]::GetCurrentProcess();try{$CccStageTicks=$CccStageSelf.StartTime.ToUniversalTime().Ticks}finally{$CccStageSelf.Dispose()}",
+        `$CccStageLimit=[long][Math]::Min([long]120000,$CccStageBudget)+${ELEVATED_CHILD_TERMINATION_CONFIRMATION_MILLISECONDS}`,
+        "$CccStageExpiry='$ErrorActionPreference=''Stop'';$Target=[Diagnostics.Process]::GetProcessById('+$PID+');try{$Pinned=$Target.Handle;if($Target.StartTime.ToUniversalTime().Ticks-ne '+$CccStageTicks+'){exit 0};if(-not $Target.WaitForExit('+$CccStageLimit+')){$Target.Kill()}}finally{$Target.Dispose()}'",
+        "$CccStageInfo=[Diagnostics.ProcessStartInfo]::new();$CccStageInfo.FileName=[IO.Path]::Combine([Environment]::SystemDirectory,'WindowsPowerShell','v1.0','powershell.exe');$CccStageInfo.UseShellExecute=$false;$CccStageInfo.CreateNoWindow=$true;$CccStageInfo.WorkingDirectory=[Environment]::SystemDirectory",
+        "$CccStageInfo.Arguments='-NoLogo -NoProfile -NonInteractive -EncodedCommand '+[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($CccStageExpiry));$CccStageWatch=[Diagnostics.Process]::Start($CccStageInfo);if(-not $CccStageWatch){throw 'watchdog'};$CccStageWatchHandle=$CccStageWatch.Handle",
+        "$CccStageStream=[IO.File]::Open($CccStagePath,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)",
+        "$CccStageBytes=New-Object byte[] ($CccStageLength+1);$CccStageRead=0;while($CccStageRead-lt $CccStageBytes.Length){$CccStageCount=$CccStageStream.Read($CccStageBytes,$CccStageRead,($CccStageBytes.Length-$CccStageRead));if($CccStageCount-eq 0){break};$CccStageRead+=$CccStageCount};$CccStageStream.Dispose();$CccStageStream=$null",
+        "if($CccStageRead-ne $CccStageLength){throw 'stage-length'};$CccStageHash=[Security.Cryptography.SHA256]::Create();try{$CccStageObserved=[BitConverter]::ToString($CccStageHash.ComputeHash($CccStageBytes,0,$CccStageRead)).Replace('-','').ToLowerInvariant()}finally{$CccStageHash.Dispose()};if($CccStageObserved-cne $CccStageDigest){throw 'stage-digest'}",
+        "if($CccStageBytes[0]-ne 255-or $CccStageBytes[1]-ne 254){throw 'stage-encoding'};$CccStageSource=[Text.UnicodeEncoding]::new($false,$false,$true).GetString($CccStageBytes,2,($CccStageRead-2));$CccStageProgram=[ScriptBlock]::Create($CccStageSource)",
+        // The existing child owns the later pipe/session watchdog. Do not limit that whole session
+        // to the startup read bound, and never invoke its code before the read watchdog is retired.
+        `if(-not $CccStageWatch.HasExited){$CccStageWatch.Kill()};if(-not $CccStageWatch.WaitForExit(${ELEVATED_CHILD_FORCE_CONFIRMATION_RESERVE_MILLISECONDS})){throw 'watchdog'};$CccStageWatch.Dispose();$CccStageWatch=$null`,
+        "if($CccStageClock.ElapsedMilliseconds-ge $CccStageBudget){throw 'deadline'};& $CccStageProgram",
+        `}finally{if($CccStageStream){$CccStageStream.Dispose()};if($CccStageWatch){try{if(-not $CccStageWatch.HasExited){$CccStageWatch.Kill();[void]$CccStageWatch.WaitForExit(${ELEVATED_CHILD_FORCE_CONFIRMATION_RESERVE_MILLISECONDS})}}finally{$CccStageWatch.Dispose()}}}`,
+    ].join(";");
+}
+
 function elevatedChildSource(
     pipeName: string,
     nonce: string,
@@ -626,11 +741,11 @@ function relayProgress(stage: HyperVElevatedNetworkRelayProgressStage): string {
     return `Note '${stage}'`;
 }
 
-// The exact PowerShell supplied to -EncodedCommand, also exposed for the parser gate.
-// Keep the existing loader field as an alias: the child fits the launch limit directly,
-// so no compressed script loader is needed. Sample correlation values only.
+// Both actual generated programs enter the parser gate. Defaults use sample correlation and
+// staging metadata only; the optional stage also permits native integrity qualification.
 export function hyperVElevatedNetworkChildPrograms(
     maximumDurationMilliseconds?: number,
+    stage?: ElevatedChildStage,
 ): { readonly loader: string; readonly child: string } {
     const child = elevatedChildSource(
         `ccc-hyper-v-network-${"0".repeat(32)}`,
@@ -638,7 +753,15 @@ export function hyperVElevatedNetworkChildPrograms(
         2_000_000_000_000,
         maximumDurationMilliseconds,
     );
-    return { loader: child, child };
+    const bytes = stagedChildBytes(child);
+    return {
+        loader: elevatedChildLoaderSource(stage ?? {
+            path: "C:\\ccc-hyper-v-network-parser\\child.ps1",
+            sha256: createHash("sha256").update(bytes).digest("hex"),
+            byteLength: bytes.length,
+        }, 2_000_000_000_000, maximumDurationMilliseconds),
+        child,
+    };
 }
 
 // This process remains medium-integrity. It owns the administrator-only pipe, performs exactly one
@@ -654,18 +777,19 @@ export const HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP = [
     "try{",
     "$L=[Console]::In.ReadLine();if(-not $L-or $L.Length-gt 349528-or $L-notmatch '^[A-Za-z0-9+/]+={0,2}$'){throw 'protocol'}",
     "$E=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($L))|ConvertFrom-Json -ea Stop",
-    "$P=[string]$E.pipeName;$N=[string]$E.nonce;$Z=[string]$E.terminalToken;$X=[string]$E.executable;$D=[long]$E.deadlineUnixMilliseconds;$I=[string]$E.childEncoded;$B=[string]$E.sessionBootstrapEncoded",
-    String.raw`if($P-notmatch '^ccc-hyper-v-network-[a-f0-9]{32}$'-or $N-notmatch '^[a-f0-9]{64}$'-or $Z-notmatch '^[a-f0-9]{64}$'-or $X-notmatch '^[A-Za-z]:\\[^\x00-\x1f]{1,1024}\\System32\\WindowsPowerShell\\v1\.0\\powershell\.exe$'-or $I.Length-gt 8000-or $I-notmatch '^[A-Za-z0-9+/]+={0,2}$'-or $B.Length-gt 131072-or $B-notmatch '^[A-Za-z0-9+/]+={0,2}$'){throw 'protocol'}`,
+    "$P=[string]$E.pipeName;$N=[string]$E.nonce;$Z=[string]$E.terminalToken;$X=[string]$E.executable;$D=[long]$E.deadlineUnixMilliseconds;$LA=[string]$E.loaderArgument;$B=[string]$E.sessionBootstrapEncoded",
+    String.raw`if($P-notmatch '^ccc-hyper-v-network-[a-f0-9]{32}$'-or $N-notmatch '^[a-f0-9]{64}$'-or $Z-notmatch '^[a-f0-9]{64}$'-or $X-notmatch '^[A-Za-z]:\\[^\x00-\x1f]{1,1024}\\System32\\WindowsPowerShell\\v1\.0\\powershell\.exe$'-or $B.Length-gt 131072-or $B-notmatch '^[A-Za-z0-9+/]+={0,2}$'){throw 'protocol'}`,
+    "if($LA.Length-lt 2-or $LA.Length-gt 8000-or $LA.Contains([char]0)-or -not $LA.StartsWith([string][char]34)-or -not $LA.EndsWith([string][char]34)){throw 'protocol'}",
     "if($E.deadlineUnixMilliseconds-isnot [ValueType]-or [string]$E.deadlineUnixMilliseconds-notmatch '^[0-9]{1,16}$'-or $D-le 0-or $D-gt 9007199254740991){throw 'protocol'};$BT=[Diagnostics.Stopwatch]::StartNew();$DU=$E.PSObject.Properties.Name-contains 'maximumDurationMilliseconds';if($DU){if($E.maximumDurationMilliseconds-isnot [ValueType]-or [string]$E.maximumDurationMilliseconds-notmatch '^[0-9]{1,10}$'){throw 'protocol'};$BD=[long]$E.maximumDurationMilliseconds;if($BD-le 0-or $BD-gt [int]::MaxValue){throw 'protocol'}}else{$BD=$D-[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()};[void](Left)",
     "Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;public static class CccHvPipe{[DllImport(\"kernel32.dll\",SetLastError=true)][return:MarshalAs(UnmanagedType.Bool)]public static extern bool GetNamedPipeClientProcessId(IntPtr h,out uint p);}'",
     "$S=[IO.Pipes.PipeSecurity]::new();$A=[Security.Principal.SecurityIdentifier]'S-1-5-32-544';$S.SetAccessRule([IO.Pipes.PipeAccessRule]::new($A,[IO.Pipes.PipeAccessRights]::ReadWrite,[Security.AccessControl.AccessControlType]::Allow))",
     "$Q=[IO.Pipes.NamedPipeServerStream]::new($P,[IO.Pipes.PipeDirection]::InOut,1,[IO.Pipes.PipeTransmissionMode]::Byte,[IO.Pipes.PipeOptions]::Asynchronous,4096,4096,$S)",
     `[Console]::Out.WriteLine('CCC_HYPER_V_ELEVATED_NETWORK_REQUEST');[Console]::Out.Flush();if($null-eq ($AP=[Console]::In.ReadLine())){throw 'request'};if($DU){$AV=$AP.Split(':',2);if($AV.Count-ne 2-or $AV[0]-cne 'CCC_HYPER_V_ELEVATED_NETWORK_APPROVE'-or $AV[1]-notmatch '^[0-9]{1,10}$'){throw 'request'};$AD=[long]$AV[1];if($AD-le 0-or $AD-gt [int]::MaxValue){throw 'deadline'};$BD=[Math]::Min((Left),$AD);$BT.Restart()}elseif($AP-cne 'CCC_HYPER_V_ELEVATED_NETWORK_APPROVE'){throw 'request'};[void](Left);${relayProgress("approval-received")}`,
     "$H=$Q.BeginWaitForConnection($null,$null)",
-    // Start-Process wraps the ShellExecute Win32Exception in an InvalidOperationException, so the
-    // 1223 (ERROR_CANCELLED) test walks the InnerException chain; testing only the outer exception
-    // reported a declined or timed-out UAC prompt as a launch failure.
-    `try{$C=Start-Process -FilePath $X -Verb RunAs -ArgumentList @('-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-EncodedCommand',$I) -WindowStyle Hidden -PassThru -ea Stop}catch{$UE=$_.Exception;while($UE-and -not ($UE-is [ComponentModel.Win32Exception])){$UE=$UE.InnerException};if($UE-and $UE.NativeErrorCode-eq 1223){throw 'cancelled'};throw 'launch'};${relayProgress("runas-returned")}`,
+    // Start-Process can discard the native exception. Direct .NET launch keeps ERROR_CANCELLED
+    // distinct from genuine launch rejection, so the existing gate does not re-prompt a refusal.
+    "$SI=[Diagnostics.ProcessStartInfo]::new();$SI.FileName=$X;$SI.Arguments='-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command '+$LA;$SI.UseShellExecute=$true;$SI.Verb='RunAs';$SI.WindowStyle=[Diagnostics.ProcessWindowStyle]::Hidden;$SI.WorkingDirectory=[Environment]::SystemDirectory",
+    `try{$C=[Diagnostics.Process]::Start($SI);if(-not $C){throw 'launch'}}catch{$UE=$_.Exception;while($UE-and -not ($UE-is [ComponentModel.Win32Exception])){$UE=$UE.InnerException};if($UE-and $UE.NativeErrorCode-eq 1223){throw 'cancelled'};throw 'launch'};${relayProgress("runas-returned")}`,
     `$CS=$C.StartTime.ToUniversalTime().Ticks;$M=[int][Math]::Min([long]120000,(Left));if(-not $H.AsyncWaitHandle.WaitOne($M)){throw 'handshake'};$Q.EndWaitForConnection($H);${relayProgress("pipe-connected")}`,
     "[uint32]$CP=0;if(-not [CccHvPipe]::GetNamedPipeClientProcessId($Q.SafePipeHandle.DangerousGetHandle(),[ref]$CP)-or $CP-ne [uint32]$C.Id){throw 'authentication'}",
     "$R=[IO.StreamReader]::new($Q,[Text.UTF8Encoding]::new($false),$false,4096,$true);$W=[IO.StreamWriter]::new($Q,[Text.UTF8Encoding]::new($false),4096,$true)",
@@ -713,43 +837,66 @@ function defaultSpawnRelay(
     const pipeName = `ccc-hyper-v-network-${randomBytes(16).toString("hex")}`;
     const nonce = randomBytes(32).toString("hex");
     const terminalToken = randomBytes(32).toString("hex");
-    const childEncoded = encodedPowerShell(elevatedChildSource(
+    const childSource = elevatedChildSource(
         pipeName,
         nonce,
         request.deadlineUnixMilliseconds,
         request.maximumDurationMilliseconds,
-    ));
+    );
+    const childEncoded = encodedPowerShell(childSource);
     if (childEncoded.length > 8_000) {
         throw new HyperVElevatedNetworkSessionError("hyper-v-network-elevation-protocol-invalid");
     }
-    const launchEnvelope = Buffer.from(JSON.stringify({
-        pipeName,
-        nonce,
-        terminalToken,
-        executable: request.executable,
-        deadlineUnixMilliseconds: request.deadlineUnixMilliseconds,
-        ...(request.maximumDurationMilliseconds !== undefined
-            ? { maximumDurationMilliseconds: remainingMilliseconds() }
-            : {}),
-        childEncoded,
-        sessionBootstrapEncoded: Buffer.from(request.sessionBootstrap, "utf8").toString("base64"),
-    }), "utf8").toString("base64");
-    if (Buffer.byteLength(launchEnvelope, "utf8") > MAX_LAUNCH_ENVELOPE_BYTES) {
-        throw new HyperVElevatedNetworkSessionError("hyper-v-network-elevation-protocol-invalid");
-    }
-
     if (remainingMilliseconds() <= 0) {
         throw new HyperVElevatedNetworkSessionError("hyper-v-network-elevation-deadline-exceeded");
     }
-    const child = spawn(request.executable, hiddenWindowsPowerShellArgs([
-        "-NoLogo",
-        "-NoProfile",
-        "-NonInteractive",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-Command",
-        HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP,
-    ]), { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+    const stage = stageElevatedChild(childSource);
+    let child: ReturnType<typeof spawn>;
+    let launchEnvelope: string;
+    try {
+        const loaderArgument = quoteWindowsProcessArgument(elevatedChildLoaderSource(
+            stage,
+            request.deadlineUnixMilliseconds,
+            request.maximumDurationMilliseconds !== undefined ? remainingMilliseconds() : undefined,
+        ));
+        if (loaderArgument.length > 8_000) {
+            throw new HyperVElevatedNetworkSessionError("hyper-v-network-elevation-protocol-invalid");
+        }
+        launchEnvelope = Buffer.from(JSON.stringify({
+            pipeName,
+            nonce,
+            terminalToken,
+            executable: request.executable,
+            deadlineUnixMilliseconds: request.deadlineUnixMilliseconds,
+            ...(request.maximumDurationMilliseconds !== undefined
+                ? { maximumDurationMilliseconds: remainingMilliseconds() }
+                : {}),
+            childEncoded,
+            loaderArgument,
+            sessionBootstrapEncoded: Buffer.from(request.sessionBootstrap, "utf8").toString("base64"),
+        }), "utf8").toString("base64");
+        if (Buffer.byteLength(launchEnvelope, "utf8") > MAX_LAUNCH_ENVELOPE_BYTES) {
+            throw new HyperVElevatedNetworkSessionError("hyper-v-network-elevation-protocol-invalid");
+        }
+        if (remainingMilliseconds() <= 0) {
+            throw new HyperVElevatedNetworkSessionError("hyper-v-network-elevation-deadline-exceeded");
+        }
+        child = spawn(request.executable, hiddenWindowsPowerShellArgs([
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP,
+        ]), { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+    } catch (error) {
+        if (!stage.cleanup()) {
+            throw new AggregateError([error, new Error("hyper-v-network-stage-cleanup-failed")],
+                "hyper-v-network-elevation-relay-spawn-failed", { cause: error });
+        }
+        throw error;
+    }
     const lineListeners: Array<(line: string) => void> = [];
     const exitListeners: Array<(reason: HyperVWindowsSessionErrorCode) => void> = [];
     const queued: QueuedWrite[] = [];
@@ -812,6 +959,12 @@ function defaultSpawnRelay(
     const finish = (reason: HyperVWindowsSessionErrorCode) => {
         if (exited) return;
         exited = true;
+        if (!stage.cleanup()) {
+            relayFailure = transitionHyperVElevatedNetworkRelayFailure(relayFailure, {
+                kind: "primary-if-absent",
+                code: "hyper-v-network-elevation-relay-failed",
+            });
+        }
         if (forcedKill) clearTimeout(forcedKill);
         if (closeWriteTimer) clearTimeout(closeWriteTimer);
         failQueued(new Error(reason));

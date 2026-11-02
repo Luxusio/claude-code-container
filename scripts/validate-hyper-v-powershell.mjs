@@ -224,9 +224,9 @@ async function elevatedRelayBootstrapSource() {
     return path;
 }
 
-// The elevated child and the loader that -EncodedCommand hands it are generated the same way and
-// were never parse-checked: the child runs hidden, non-interactive, and elevated, so a program that
-// fails before it reaches the pipe is indistinguishable from a handshake timeout on a Windows host.
+// Check both generated programs, including the digest-bound staged-file loader. The child runs
+// hidden, non-interactive and elevated, so a failure before the pipe can otherwise present only
+// as a handshake timeout. Parsing alone does not prove loading, integrity or native execution.
 async function elevatedChildSources() {
     const module = pathToFileURL(join(repoRoot, "packages", "device-lab", "src", "device-lab", "broker", "hyper-v", "elevated-network-session.ts")).href;
     const legacyModule = pathToFileURL(join(repoRoot, "packages", "device-lab", "src", "host-control", "hyper-v", "core.ts")).href;

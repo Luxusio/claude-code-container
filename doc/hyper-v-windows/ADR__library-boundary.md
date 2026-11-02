@@ -885,10 +885,12 @@ elevated program that fails before the pipe presents on a Windows host only as
 a handshake timeout.
 
 Two further consequences of that opacity. The relay classified a declined or
-timed-out UAC prompt as `hyper-v-network-elevation-launch-failed`, because
-`Start-Process` wraps the ShellExecute `Win32Exception` in an
-`InvalidOperationException` and the relay tested only the outer exception for
-`ERROR_CANCELLED` (1223); it now walks the `InnerException` chain. And because
+timed-out UAC prompt as `hyper-v-network-elevation-launch-failed`. An initial
+repair walked the `InnerException` chain for `ERROR_CANCELLED` (1223), but that
+does not recover a native exception discarded by `Start-Process`; Windows
+PowerShell can replace it with an `InvalidOperationException` without an inner
+exception. Direct `ProcessStartInfo` RunAs preserves the native classification.
+And because
 each real run through UAC yields exactly one bounded code, the standalone
 proof gains a companion diagnostic,
 `scripts/real-tests/hyper-v-windows-network-child-probe.mjs`, which runs the
@@ -1751,3 +1753,21 @@ an uncertain result is never replayed. Windows retains its prior cleanup path.
 The observable behavior and failure checks are in
 `doc/device-lab/REQ__hyper-v-typed-linux-seed.md`. Native Windows parser and
 disposable-host proof remain pending for the parent Goal.
+
+### Administrator relay launch compatibility
+
+A Windows Server 2025 comparison reproduced native access denied (5) before
+RunAs returned a process when the generated child was supplied inline, both
+encoded and correctly quoted as `-Command`. A same-length harmless command
+succeeded. The identical plaintext child supplied through a file authenticated
+successfully, as did a short loader that bounded its read, verified a pinned
+digest and executed those same bytes. Custom AMSI scans did not detect the
+samples; these observations do not identify a particular security policy.
+
+Use the staged, digest-bound loader rather than retrying transports or changing
+security settings. A pathname and a private directory alone cannot protect
+elevated code from same-user replacement. The loader verifies the bytes it
+actually executes and arms qualified expiry before file access. Node owns the
+temporary file and empty-directory cleanup. Keep the existing authenticated
+pipe, operation budgets and shutdown ladder; qualify the final production
+relay with a read-only native query and closure, beyond the AUTH-only diagnostic.

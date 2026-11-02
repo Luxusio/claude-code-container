@@ -294,12 +294,20 @@ as soon as the session has started it.
 Session error codes are a closed exported union and the network client MUST
 forward them verbatim as bounded transport codes; only strings outside that
 union and the elevation union collapse to `executor-failed`.
-The generated elevated child program and the loader that `-EncodedCommand`
-hands it MUST enter the Windows PowerShell parser gate beside the relay
-bootstrap, and the loader MUST pass its decoded byte array to the stream
-constructor directly (never through the `New-Object` comma idiom), because a
-child that fails before reaching the pipe is observable on a host only as a
-handshake timeout.
+The generated elevated child program and its actual launch loader MUST enter
+the Windows PowerShell parser gate beside the relay bootstrap. If the child
+is staged in a temporary file, the loader MUST bound its read, verify the
+independently bound byte length and digest, and execute the same verified bytes.
+Checking a pathname and subsequently executing it with `-File` is insufficient.
+The loader MUST arm qualified elevated expiry before file access; staging and
+loading consume the existing acquisition budget. The unelevated owner MUST
+clean only its exact staged file and empty directory, without recursive removal
+through a replaceable pathname. Native RunAs cancellation MUST retain error
+1223 so that the existing gate can distinguish refusal from launch failure.
+These are derived implementation obligations of the authenticated, bounded
+administrator-executor contract above, rather than new user configuration.
+Parser success alone does not establish correct loading, authentication or
+shutdown; native Windows qualification MUST exercise the actual relay.
 Closing the callback-scoped administrator executor MUST also be bounded without
 racing termination proof. The medium-integrity PowerShell relay MUST NOT use an
 asynchronous copy from its redirected standard input: Windows anonymous pipes
