@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as fs from "fs";
 import { parseToolPayload, parseToolResult } from "./device-lab-mcp-client.ts";
-import { nestedDiagnostic } from "./nested-hyper-v.ts";
+import { nestedDiagnostic, nestedFailureMessage } from "./nested-hyper-v.ts";
 vi.mock("fs", { spy: true });
 
 const written: string[] = [];
@@ -555,5 +555,16 @@ describe("MCP error output", () => {
         const evidence = nestedDiagnostic(readiness, { ok: true });
         expect(evidence.code).toBe("hyper-v-guest-not-ready");
         expect(JSON.stringify(evidence)).toContain("hyper-v-powershell-direct-unavailable");
+    });
+    it.each(["real-provider-test-lock-unavailable", "real-provider-test-already-running"])("preserves %s in nested diagnostics and gives neutral retry guidance", code => {
+        const error = Object.assign(new Error("cannot start nested run: the real-provider test lock could not be acquired"), { code });
+        expect(nestedDiagnostic(error).code).toBe(code);
+        Object.assign(error, { nestedFailure: { stage: "lock", code, diagnosticPath: "results/nested/failure.json" } });
+        const message = nestedFailureMessage(error);
+        expect(message).toContain(code);
+        expect(message).toContain("lock could not be acquired");
+        expect(message).toMatch(/retry/i);
+        expect(message).toContain("Diagnostics: results/nested/failure.json");
+        expect(message).not.toMatch(/another.*holds|already running/i);
     });
 });

@@ -67,8 +67,9 @@ export function nestedDiagnostic(error: unknown, payload?: unknown) {
             }
         }
     }
-    const candidate = error instanceof Error && (error as NodeJS.ErrnoException).code === "real-provider-test-already-running"
-        ? "real-provider-test-already-running"
+    const lockCode = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;
+    const candidate = lockCode === "real-provider-test-lock-unavailable" || lockCode === "real-provider-test-already-running"
+        ? lockCode
         : diagnostics.find(value => typeof value.error === "string")?.error ?? message;
     const code = typeof candidate === "string" && /^[a-z][a-z0-9-]{0,79}$/.test(candidate.split(":", 1)[0])
         ? candidate.split(":", 1)[0] : "nested-development-failed";
@@ -280,8 +281,8 @@ export function nestedFailureMessage(error: unknown): string {
     const saved = (error as any)?.nestedFailure;
     if (saved) {
         const operation = `${saved.stage}${saved.tool ? `/${saved.tool}` : ""}`;
-        const action = saved.code === "real-provider-test-already-running"
-            ? " Another real-provider run holds the lock or its owner could not be verified. Wait for it to finish, then retry." : "";
+        const action = saved.code === "real-provider-test-lock-unavailable" || saved.code === "real-provider-test-already-running"
+            ? " The real-provider run lock could not be acquired. Check other real-provider runs and retry." : "";
         return `[ccc] ${operation}: ${saved.code}.${action} ${saved.diagnosticPath ? `Diagnostics: ${saved.diagnosticPath}` : "Could not save failure diagnostics."}`;
     }
     const message = error instanceof Error ? error.message : String(error);
