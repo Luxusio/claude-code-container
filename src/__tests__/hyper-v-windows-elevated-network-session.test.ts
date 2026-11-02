@@ -2357,7 +2357,7 @@ describe("callback-scoped elevated Hyper-V network session", () => {
         );
         const interpreter = nativePowerShell.canonicalWindowsPowerShellPath();
         if (!interpreter) throw new Error("Canonical Windows PowerShell unavailable");
-        const directory = mkdtempSync(join(tmpdir(), "ccc-stage ' 한글 -"));
+        const directory = mkdtempSync(join(tmpdir(), "ccc-stage ' ‘ ’ 한글 -"));
         const path = join(directory, "child's code.ps1");
         const loaderPath = join(directory, "loader.ps1");
         const marker = "ccc-stage-fixture-ok";
@@ -2404,6 +2404,102 @@ describe("callback-scoped elevated Hyper-V network session", () => {
             } else {
                 expect(result.status, result.stderr).not.toBe(0);
                 expect(result.stdout).not.toContain(marker);
+            }
+        } finally {
+            rmSync(directory, { recursive: true, force: true });
+        }
+    });
+
+    it.skipIf(process.platform !== "win32").each([
+        "before-loader",
+        "during-read",
+        "watchdog-startup",
+        "wall-back",
+        "wall-forward",
+    ] as const)("honors the bound native QPC deadline on Windows (%s)", async (variant) => {
+        const { spawnSync } = await vi.importActual<typeof import("child_process")>("child_process");
+        const nativePowerShell = await vi.importActual<typeof import("@ccc/device-lab/windows-system-powershell.js")>(
+            "@ccc/device-lab/windows-system-powershell.js",
+        );
+        const interpreter = nativePowerShell.canonicalWindowsPowerShellPath();
+        if (!interpreter) throw new Error("Canonical Windows PowerShell unavailable");
+        const directory = mkdtempSync(join(tmpdir(), "ccc-stage-clock-"));
+        const path = join(directory, "child.ps1");
+        const loaderPath = join(directory, "loader.ps1");
+        const tracePath = join(directory, "watchdog.json");
+        const marker = "ccc-stage-clock-body";
+        const bytes = Buffer.concat([
+            Buffer.from([0xff, 0xfe]),
+            Buffer.from(`[Console]::Out.WriteLine('${marker}')`, "utf16le"),
+        ]);
+        const budget = variant === "before-loader" ? 200 : variant === "during-read" ? 3_000 : 10_000;
+        const expiryMarker = "$CccStageNativeExpiry=[long]0000000000000000000";
+        const literal = (value: string) => `'${value.replace(/'/g, "''")}'`;
+        try {
+            writeFileSync(path, bytes);
+            let { loader } = hyperVElevatedNetworkChildPrograms(10_000, {
+                path,
+                sha256: createHash("sha256").update(bytes).digest("hex"),
+                byteLength: bytes.length,
+            });
+            expect(loader.split(expiryMarker)).toHaveLength(2);
+            // Bind the same placeholder the real relay refreshes immediately before RunAs.
+            // The deadline comes from actual Windows QPC, never a fake or Unix clock.
+            loader = loader.replace(expiryMarker, "$CccStageNativeExpiry=$CccTestExpiry");
+            if (variant === "wall-back" || variant === "wall-forward") {
+                // Skew only the legacy Unix metadata; neither operating-system clock is changed.
+                const wallMetadata = "[long]2000000000000-";
+                expect(loader.split(wallMetadata)).toHaveLength(2);
+                loader = loader.replace(wallMetadata, `[long]${Date.now() + (variant === "wall-back" ? -86_400_000 : 86_400_000)}-`);
+            }
+            if (variant === "during-read") {
+                const read = "$CccStageBytes=New-Object byte[]";
+                expect(loader.split(read)).toHaveLength(2);
+                loader = loader.replace(read, `[Console]::Out.WriteLine('fixture-read-entered');Start-Sleep -Milliseconds 3300;${read}`);
+            }
+            if (variant === "watchdog-startup") {
+                const argument = "$CccStageInfo.Arguments=";
+                const remaining = "$Remaining=[long]";
+                const wait = "if(-not $Target.WaitForExit(";
+                const trace = `[IO.File]::WriteAllText([Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('${Buffer.from(tracePath, "utf16le").toString("base64")}')),([ordered]@{beforeTicks=[string]$CccProbeBefore;remaining=$Remaining}|ConvertTo-Json -Compress));`;
+                const observe = [
+                    `$CccStageExpiry='Start-Sleep -Milliseconds 750;'+$CccStageExpiry.Replace(${literal(remaining)},${literal("$CccProbeBefore=[Diagnostics.Stopwatch]::GetTimestamp();" + remaining)}).Replace(${literal(wait)},${literal(trace + wait)})`,
+                ].join(";");
+                expect(loader.split(argument)).toHaveLength(2);
+                loader = loader.replace(argument, `${observe};${argument}`);
+                const open = "[void](CccStageLeft);$CccStageStream=[IO.File]::Open(";
+                expect(loader.split(open)).toHaveLength(2);
+                const traceData = `[Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('${Buffer.from(tracePath, "utf16le").toString("base64")}'))`;
+                loader = loader.replace(open, `$CccProbePath=${traceData};$CccProbeClock=[Diagnostics.Stopwatch]::StartNew();while(-not [IO.File]::Exists($CccProbePath)-and $CccProbeClock.ElapsedMilliseconds-lt 5000){Start-Sleep -Milliseconds 10};if(-not [IO.File]::Exists($CccProbePath)){throw 'watchdog-observation-timeout'};${open}`);
+            }
+            const prefix = `$CccTestExpiry=[Diagnostics.Stopwatch]::GetTimestamp()+[long][Math]::Floor(([decimal][Diagnostics.Stopwatch]::Frequency*${budget})/1000);${variant === "before-loader" ? "Start-Sleep -Milliseconds 250;" : ""}`;
+            const suffix = variant === "watchdog-startup"
+                ? `[Console]::Out.WriteLine(([ordered]@{expiryTicks=[string]$CccStageWatchExpiry;frequency=[string][Diagnostics.Stopwatch]::Frequency;trace=([IO.File]::ReadAllText($CccProbePath)|ConvertFrom-Json)}|ConvertTo-Json -Compress))`
+                : "";
+            const script = `$ErrorActionPreference='Stop';${prefix}try{${loader};${suffix}}catch{[Console]::Out.WriteLine($_.Exception.Message)}`;
+            writeFileSync(loaderPath, Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(script, "utf16le")]));
+            const result = spawnSync(interpreter, [
+                "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", loaderPath,
+            ], { encoding: "utf8", windowsHide: true, timeout: 15_000 });
+            expect(result.error, result.stderr).toBeUndefined();
+            expect(result.status, result.stderr).toBe(0);
+            if (variant === "before-loader" || variant === "during-read") {
+                expect(result.stdout.trim().split(/\r?\n/).at(-1)).toBe("deadline");
+                expect(result.stdout).not.toContain(marker);
+                if (variant === "during-read") expect(result.stdout).toContain("fixture-read-entered");
+            } else {
+                expect(result.stdout).toContain(marker);
+                if (variant === "watchdog-startup") {
+                    const observed = JSON.parse(result.stdout.trim().split(/\r?\n/).at(-1)!) as {
+                        expiryTicks: string; frequency: string; trace: { beforeTicks: string; remaining: number };
+                    };
+                    const upperBound = Number((BigInt(observed.expiryTicks) - BigInt(observed.trace.beforeTicks)) * 1000n / BigInt(observed.frequency));
+                    // The trace is taken before the production remaining-time calculation, so
+                    // this upper bound is independent of scheduler and filesystem delays.
+                    expect(observed.trace.remaining).toBeGreaterThanOrEqual(0);
+                    expect(observed.trace.remaining).toBeLessThanOrEqual(upperBound);
+                    expect(observed.trace.remaining).toBeLessThan(14_500);
+                }
             }
         } finally {
             rmSync(directory, { recursive: true, force: true });
@@ -3025,17 +3121,30 @@ describe("elevated network acquisition settlement", () => {
         "write-failure",
         "spawn-failure",
         "expired-during-staging",
-    ] as const)("removes only its owned temporary stage after %s", async (outcome) => {
+        "expired-with-foreign-entry",
+    ] as const)("preserves primary errors and unrelated files when cleaning its stage after %s", async (outcome) => {
         const unrelatedDirectory = mkdtempSync(join(tmpdir(), "ccc-unrelated-stage-"));
         const unrelated = join(unrelatedDirectory, "keep.txt");
         writeFileSync(unrelated, "unrelated content");
         const beforeElevation = vi.fn();
+        const settled = vi.fn();
+        const expiresDuringStaging = outcome === "expired-during-staging" || outcome === "expired-with-foreign-entry";
+        let foreignEntry: string | undefined;
         let monotonic = 0;
         childProcessMocks.spawn.mockReset();
         childProcessMocks.stageDirectories.length = 0;
         childProcessMocks.captureStageDirectories = true;
         if (outcome === "write-failure") childProcessMocks.stageWriteError = new Error("injected stage write failure");
-        if (outcome === "expired-during-staging") childProcessMocks.afterStageWrite = () => { monotonic = 30_001; };
+        if (expiresDuringStaging) childProcessMocks.afterStageWrite = () => {
+            // An unexpected entry makes the product's non-recursive rmdir fail. Its cleanup
+            // must preserve both that entry and the original expiry diagnostic.
+            childProcessMocks.afterStageWrite = null;
+            if (outcome === "expired-with-foreign-entry") {
+                foreignEntry = join(childProcessMocks.stageDirectories[0]!, "unexpected.txt");
+                writeFileSync(foreignEntry, "leave this entry alone");
+            }
+            monotonic = 30_001;
+        };
         if (outcome === "spawn-failure") {
             childProcessMocks.spawn.mockImplementationOnce(() => { throw new Error("injected spawn failure"); });
         } else {
@@ -3052,21 +3161,32 @@ describe("elevated network acquisition settlement", () => {
                 maximumDurationMilliseconds: 30_000,
                 monotonicNow: () => monotonic,
                 onBeforeElevation: beforeElevation,
+                onAcquisitionSettled: settled,
             }, (executor) => executor.execute(getVmRequest(), executorContext()));
             if (outcome === "success") expect(result).toMatchObject({ status: 0 });
             else expect(result).toMatchObject({
                 status: null,
                 error: outcome === "cancelled" ? "hyper-v-network-elevation-cancelled"
-                    : outcome === "expired-during-staging" ? "hyper-v-network-elevation-deadline-exceeded"
+                    : expiresDuringStaging ? "hyper-v-network-elevation-deadline-exceeded"
                         : "hyper-v-network-elevation-relay-spawn-failed",
             });
             expect(childProcessMocks.stageDirectories).toHaveLength(1);
-            for (const directory of childProcessMocks.stageDirectories) expect(existsSync(directory)).toBe(false);
+            for (const directory of childProcessMocks.stageDirectories) {
+                expect(existsSync(directory)).toBe(outcome === "expired-with-foreign-entry");
+            }
+            if (foreignEntry) {
+                expect(readFileSync(foreignEntry, "utf8")).toBe("leave this entry alone");
+                expect(settled.mock.calls).toEqual([[{
+                    prompted: false,
+                    ready: false,
+                    code: "hyper-v-network-elevation-deadline-exceeded",
+                }]]);
+            }
             expect(readFileSync(unrelated, "utf8")).toBe("unrelated content");
             const enteredRelay = outcome === "success" || outcome === "cancelled";
             expect(beforeElevation).toHaveBeenCalledTimes(enteredRelay ? 1 : 0);
             expect(childProcessMocks.spawn).toHaveBeenCalledTimes(
-                outcome === "write-failure" || outcome === "expired-during-staging" ? 0 : 1,
+                outcome === "write-failure" || expiresDuringStaging ? 0 : 1,
             );
         } finally {
             childProcessMocks.stageWriteError = null;

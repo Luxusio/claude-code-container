@@ -300,7 +300,10 @@ is staged in a temporary file, the loader MUST bound its read, verify the
 independently bound byte length and digest, and execute the same verified bytes.
 Checking a pathname and subsequently executing it with `-File` is insufficient.
 The loader MUST arm qualified elevated expiry before file access; staging and
-loading consume the existing acquisition budget. The unelevated owner MUST
+loading consume the existing acquisition budget. Its Windows shared-counter
+expiry MUST be refreshed from the relay's remaining allowance immediately
+before RunAs, and the loader and watchdog MUST charge consent and their own
+startup time rather than restart a captured duration. The unelevated owner MUST
 clean only its exact staged file and empty directory, without recursive removal
 through a replaceable pathname. Native RunAs cancellation MUST retain error
 1223 so that the existing gate can distinguish refusal from launch failure.

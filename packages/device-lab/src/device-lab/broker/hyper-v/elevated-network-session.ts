@@ -599,6 +599,8 @@ type ElevatedChildStage = {
     readonly byteLength: number;
 };
 
+const STAGE_NATIVE_EXPIRY_MARKER = "$CccStageNativeExpiry=[long]0000000000000000000";
+
 function stagedChildBytes(source: string): Buffer {
     return Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(source, "utf16le")]);
 }
@@ -670,6 +672,7 @@ function elevatedChildLoaderSource(
     stage: ElevatedChildStage,
     deadlineUnixMilliseconds: number,
     maximumDurationMilliseconds?: number,
+    requireNativeExpiry = true,
 ): string {
     // Preserve the existing 8,000-character Base64 child limit, plus its UTF-16 BOM.
     if (!Number.isInteger(stage.byteLength) || stage.byteLength < 2 || stage.byteLength > 6_002
@@ -677,28 +680,39 @@ function elevatedChildLoaderSource(
         || stage.path.includes("\0")) throw new HyperVElevatedNetworkSessionError("hyper-v-network-elevation-protocol-invalid");
     return [
         "$ErrorActionPreference='Stop'",
-        `$CccStagePath='${stage.path.replace(/'/g, "''")}'`,
+        // Encode path data only: PowerShell also treats typographic single quotes as delimiters.
+        `$CccStagePathData='${Buffer.from(stage.path, "utf16le").toString("base64")}'`,
+        "$CccStagePath=[Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($CccStagePathData))",
         `$CccStageDigest='${stage.sha256}'`,
         `$CccStageLength=${stage.byteLength}`,
-        `$CccStageBudget=[long]${maximumDurationMilliseconds ?? -1}`,
-        `if($CccStageBudget-lt 0){$CccStageBudget=[long]${deadlineUnixMilliseconds}-[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()}`,
-        "if($CccStageBudget-le 0){throw 'deadline'};$CccStageClock=[Diagnostics.Stopwatch]::StartNew()",
+        STAGE_NATIVE_EXPIRY_MARKER,
+        "$CccStageFrequency=[Diagnostics.Stopwatch]::Frequency",
+        ...(requireNativeExpiry
+            ? ["if($CccStageNativeExpiry-le 0){throw 'deadline'}"]
+            : [
+                // Explicit standalone interpreter fixtures have no relay. Production never uses
+                // this fallback: its deadline is bound before UAC and survives startup latency.
+                `$CccStageBudget=[long]${maximumDurationMilliseconds ?? -1}`,
+                `if($CccStageBudget-lt 0){$CccStageBudget=[long]${deadlineUnixMilliseconds}-[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()}`,
+                "if($CccStageNativeExpiry-eq 0){if($CccStageBudget-le 0){throw 'deadline'};$CccStageNativeExpiry=[Diagnostics.Stopwatch]::GetTimestamp()+[long][Math]::Floor(([decimal]$CccStageFrequency*$CccStageBudget)/1000)}",
+            ]),
+        "function CccStageLeft{[long]$CccStageRemaining=[Math]::Floor(([decimal]($CccStageNativeExpiry-[Diagnostics.Stopwatch]::GetTimestamp())*1000)/$CccStageFrequency);if($CccStageRemaining-le 0){throw 'deadline'};return $CccStageRemaining};[void](CccStageLeft)",
         "$CccStageWatch=$null;$CccStageStream=$null",
         "try{",
         // Bound file opening as well as reading: a replaced parent can redirect even a short read.
         "$CccStageSelf=[Diagnostics.Process]::GetCurrentProcess();try{$CccStageTicks=$CccStageSelf.StartTime.ToUniversalTime().Ticks}finally{$CccStageSelf.Dispose()}",
-        `$CccStageLimit=[long][Math]::Min([long]120000,$CccStageBudget)+${ELEVATED_CHILD_TERMINATION_CONFIRMATION_MILLISECONDS}`,
-        "$CccStageExpiry='$ErrorActionPreference=''Stop'';$Target=[Diagnostics.Process]::GetProcessById('+$PID+');try{$Pinned=$Target.Handle;if($Target.StartTime.ToUniversalTime().Ticks-ne '+$CccStageTicks+'){exit 0};if(-not $Target.WaitForExit('+$CccStageLimit+')){$Target.Kill()}}finally{$Target.Dispose()}'",
+        `$CccStageWatchExpiry=[Math]::Min($CccStageNativeExpiry,([Diagnostics.Stopwatch]::GetTimestamp()+[long]$CccStageFrequency*120))+[long][Math]::Floor(([decimal]$CccStageFrequency*${ELEVATED_CHILD_TERMINATION_CONFIRMATION_MILLISECONDS})/1000)`,
+        "$CccStageExpiry='$ErrorActionPreference=''Stop'';$Target=[Diagnostics.Process]::GetProcessById('+$PID+');try{$Pinned=$Target.Handle;if($Target.StartTime.ToUniversalTime().Ticks-ne '+$CccStageTicks+'){exit 0};$Remaining=[long][Math]::Max(0,[Math]::Floor(([decimal]('+[string]$CccStageWatchExpiry+'-[Diagnostics.Stopwatch]::GetTimestamp())*1000)/[Diagnostics.Stopwatch]::Frequency));if(-not $Target.WaitForExit([int][Math]::Min([long][int]::MaxValue,$Remaining))){$Target.Kill()}}finally{$Target.Dispose()}'",
         "$CccStageInfo=[Diagnostics.ProcessStartInfo]::new();$CccStageInfo.FileName=[IO.Path]::Combine([Environment]::SystemDirectory,'WindowsPowerShell','v1.0','powershell.exe');$CccStageInfo.UseShellExecute=$false;$CccStageInfo.CreateNoWindow=$true;$CccStageInfo.WorkingDirectory=[Environment]::SystemDirectory",
         "$CccStageInfo.Arguments='-NoLogo -NoProfile -NonInteractive -EncodedCommand '+[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($CccStageExpiry));$CccStageWatch=[Diagnostics.Process]::Start($CccStageInfo);if(-not $CccStageWatch){throw 'watchdog'};$CccStageWatchHandle=$CccStageWatch.Handle",
-        "$CccStageStream=[IO.File]::Open($CccStagePath,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)",
+        "[void](CccStageLeft);$CccStageStream=[IO.File]::Open($CccStagePath,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)",
         "$CccStageBytes=New-Object byte[] ($CccStageLength+1);$CccStageRead=0;while($CccStageRead-lt $CccStageBytes.Length){$CccStageCount=$CccStageStream.Read($CccStageBytes,$CccStageRead,($CccStageBytes.Length-$CccStageRead));if($CccStageCount-eq 0){break};$CccStageRead+=$CccStageCount};$CccStageStream.Dispose();$CccStageStream=$null",
         "if($CccStageRead-ne $CccStageLength){throw 'stage-length'};$CccStageHash=[Security.Cryptography.SHA256]::Create();try{$CccStageObserved=[BitConverter]::ToString($CccStageHash.ComputeHash($CccStageBytes,0,$CccStageRead)).Replace('-','').ToLowerInvariant()}finally{$CccStageHash.Dispose()};if($CccStageObserved-cne $CccStageDigest){throw 'stage-digest'}",
         "if($CccStageBytes[0]-ne 255-or $CccStageBytes[1]-ne 254){throw 'stage-encoding'};$CccStageSource=[Text.UnicodeEncoding]::new($false,$false,$true).GetString($CccStageBytes,2,($CccStageRead-2));$CccStageProgram=[ScriptBlock]::Create($CccStageSource)",
         // The existing child owns the later pipe/session watchdog. Do not limit that whole session
         // to the startup read bound, and never invoke its code before the read watchdog is retired.
         `if(-not $CccStageWatch.HasExited){$CccStageWatch.Kill()};if(-not $CccStageWatch.WaitForExit(${ELEVATED_CHILD_FORCE_CONFIRMATION_RESERVE_MILLISECONDS})){throw 'watchdog'};$CccStageWatch.Dispose();$CccStageWatch=$null`,
-        "if($CccStageClock.ElapsedMilliseconds-ge $CccStageBudget){throw 'deadline'};& $CccStageProgram",
+        "[void](CccStageLeft);& $CccStageProgram",
         `}finally{if($CccStageStream){$CccStageStream.Dispose()};if($CccStageWatch){try{if(-not $CccStageWatch.HasExited){$CccStageWatch.Kill();[void]$CccStageWatch.WaitForExit(${ELEVATED_CHILD_FORCE_CONFIRMATION_RESERVE_MILLISECONDS})}}finally{$CccStageWatch.Dispose()}}}`,
     ].join(";");
 }
@@ -759,7 +773,7 @@ export function hyperVElevatedNetworkChildPrograms(
             path: "C:\\ccc-hyper-v-network-parser\\child.ps1",
             sha256: createHash("sha256").update(bytes).digest("hex"),
             byteLength: bytes.length,
-        }, 2_000_000_000_000, maximumDurationMilliseconds),
+        }, 2_000_000_000_000, maximumDurationMilliseconds, stage === undefined),
         child,
     };
 }
@@ -788,7 +802,8 @@ export const HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP = [
     "$H=$Q.BeginWaitForConnection($null,$null)",
     // Start-Process can discard the native exception. Direct .NET launch keeps ERROR_CANCELLED
     // distinct from genuine launch rejection, so the existing gate does not re-prompt a refusal.
-    "$SI=[Diagnostics.ProcessStartInfo]::new();$SI.FileName=$X;$SI.Arguments='-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command '+$LA;$SI.UseShellExecute=$true;$SI.Verb='RunAs';$SI.WindowStyle=[Diagnostics.ProcessWindowStyle]::Hidden;$SI.WorkingDirectory=[Environment]::SystemDirectory",
+    "$SI=[Diagnostics.ProcessStartInfo]::new();$SI.FileName=$X;$SI.UseShellExecute=$true;$SI.Verb='RunAs';$SI.WindowStyle=[Diagnostics.ProcessWindowStyle]::Hidden;$SI.WorkingDirectory=[Environment]::SystemDirectory",
+    `$LM='${STAGE_NATIVE_EXPIRY_MARKER}';$LI=$LA.IndexOf($LM,[StringComparison]::Ordinal);if($LI-lt 0-or $LI-ne $LA.LastIndexOf($LM,[StringComparison]::Ordinal)){throw 'protocol'};$SE=[Diagnostics.Stopwatch]::GetTimestamp()+[long][Math]::Floor(([decimal][Diagnostics.Stopwatch]::Frequency*[decimal](Left))/1000);$LA=$LA.Replace($LM,('$CccStageNativeExpiry=[long]'+$SE.ToString([Globalization.CultureInfo]::InvariantCulture)));$SI.Arguments='-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command '+$LA`,
     `try{$C=[Diagnostics.Process]::Start($SI);if(-not $C){throw 'launch'}}catch{$UE=$_.Exception;while($UE-and -not ($UE-is [ComponentModel.Win32Exception])){$UE=$UE.InnerException};if($UE-and $UE.NativeErrorCode-eq 1223){throw 'cancelled'};throw 'launch'};${relayProgress("runas-returned")}`,
     `$CS=$C.StartTime.ToUniversalTime().Ticks;$M=[int][Math]::Min([long]120000,(Left));if(-not $H.AsyncWaitHandle.WaitOne($M)){throw 'handshake'};$Q.EndWaitForConnection($H);${relayProgress("pipe-connected")}`,
     "[uint32]$CP=0;if(-not [CccHvPipe]::GetNamedPipeClientProcessId($Q.SafePipeHandle.DangerousGetHandle(),[ref]$CP)-or $CP-ne [uint32]$C.Id){throw 'authentication'}",
@@ -1382,8 +1397,12 @@ function defaultSpawnRelay(
 }
 
 function boundedElevationCode(error: unknown): HyperVElevatedNetworkErrorCode {
-    return error instanceof HyperVElevatedNetworkSessionError
-        ? error.code
+    // Staging cleanup adds evidence without changing its original typed admission failure.
+    // Inspect only that immediate typed cause, never an arbitrary recursive error graph.
+    const primary = error instanceof AggregateError && error.cause instanceof HyperVElevatedNetworkSessionError
+        ? error.cause : error;
+    return primary instanceof HyperVElevatedNetworkSessionError
+        ? primary.code
         : "hyper-v-network-elevation-relay-spawn-failed";
 }
 
