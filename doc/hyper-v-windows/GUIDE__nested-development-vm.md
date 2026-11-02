@@ -128,11 +128,12 @@ Android E2E status checks use the public device identity and running state;
 removed broker routing metadata is not required. One status observation suffices
 before control operations; those operations and fixture cleanup remain tested.
 
-A host-side `real-provider-test-already-running` failure occurs before VM setup.
-It preserves the shared real-provider run lock and reports a wait/retry action;
-`failure.json` contains the recorded owner PID and start time. Confirm that owner
-on the physical host before treating the lock as abandoned. An unverified owner
-does not authorize deleting the lock or stopping its process.
+A host-side `real-provider-test-lock-unavailable` failure occurs before VM setup.
+It reports that exclusivity could not be established within the admission
+allowance and suggests checking other real-provider runs before retrying.
+`failure.json` preserves the diagnostic code; the older
+`real-provider-test-already-running` code is also recognized. Neither diagnostic
+proves another run is alive or authorizes deleting its lock or stopping a process.
 
 ## Verification boundary
 

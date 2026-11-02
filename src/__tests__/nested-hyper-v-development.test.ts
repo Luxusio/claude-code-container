@@ -10,7 +10,7 @@ import { withExclusiveRealProviderRun, realProviderRunLockPath } from "../../scr
 const returnedDeviceId = "windows-vm-13579bdf-2468-4ace-8bdf-13579bdf2468";
 const reply = (value: unknown) => ({ content: [{ type: "text", text: JSON.stringify(value) }] });
 describe("nested run-lock diagnostics", () => {
-    it("preserves the exclusive-run conflict through saving and CLI output without deleting the lock", async () => {
+    it("preserves neutral run-lock admission failure through saving and CLI output without deleting the lock", async () => {
         const root = mkdtempSync(join(tmpdir(), "nested-lock-diagnostic-"));
         const lock = realProviderRunLockPath({ home: root });
         const operation = vi.fn();
@@ -22,8 +22,8 @@ describe("nested run-lock diagnostics", () => {
                 home: root, withLockAsync: async () => { throw Object.assign(new Error("timeout"), { code: "shared-mutation-lock-timeout" }); },
             }).catch(error => error);
             const saved = saveNestedFailure(error, root, "acquire-run-lock");
-            expect(JSON.parse(readFileSync(join(root, "failure.json"), "utf8"))).toMatchObject({ code: "real-provider-test-already-running" });
-            expect(nestedFailureMessage(saved)).toContain("Wait for it to finish, then retry.");
+            expect(JSON.parse(readFileSync(join(root, "failure.json"), "utf8"))).toMatchObject({ code: "real-provider-test-lock-unavailable" });
+            expect(nestedFailureMessage(saved)).toContain("Check other real-provider runs and retry.");
             expect(nestedFailureMessage(saved)).not.toContain("nested-development-failed");
             expect(readFileSync(lock, "utf8")).toBe(owner);
             expect(operation).not.toHaveBeenCalled();
