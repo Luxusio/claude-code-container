@@ -13,8 +13,10 @@ An acquisition timeout means exclusivity could not be established. It does not
 prove a competing process is running, including when no claim was created.
 Report an acquisition diagnostic with the original cause and lock path.
 Nested runner diagnostics must retain this code and the existing legacy code.
-Once the protected operation has entered, propagate its errors unchanged,
-including errors that themselves use a shared-lock timeout code.
+Once the protected operation has entered, the wrapper must not reclassify
+failures returned by the shared lock. With successful release, preserve the
+original operation error, including a shared-lock timeout error. The shared
+lock's existing aggregation of operation and release failures remains intact.
 
 Keep shared identity checks, live/unknown-owner protection, token-qualified
 release and proven-dead-owner recovery. Missing diagnostic metadata does not
