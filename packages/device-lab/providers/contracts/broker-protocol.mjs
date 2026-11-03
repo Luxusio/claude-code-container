@@ -5,8 +5,9 @@
 // Version 12 admits macOS snapshot methods with destructive confirmation at the broker.
 // Version 13 requires one guarded iOS shutdown reissue within the original allowance.
 // Version 14 requires the staged, verified Hyper-V elevation loader and its shared expiry.
+// Version 15 resets previous Windows Sandbox connection evidence on runtime start/stop.
 // Replace older daemons before reusing their in-memory adapter implementation.
-export const DEVICE_BROKER_PROTOCOL_VERSION = 14;
+export const DEVICE_BROKER_PROTOCOL_VERSION = 15;
 export function isCompatibleBrokerProtocol(value) {
     return value === DEVICE_BROKER_PROTOCOL_VERSION;
 }

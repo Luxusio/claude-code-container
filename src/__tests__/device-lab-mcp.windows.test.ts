@@ -128,7 +128,19 @@ cp.spawnSync=function(command,args=[],options){
  if(lookup!==null)return {status:lookup==='wsb'?0:1,stdout:lookup==='wsb'?fixture+'\\n':'',stderr:''};
  return command===fixture?sync(process.execPath,[fixture,...args],options):sync(command,args,options);
 };
-const spawn=cp.spawn;cp.spawn=function(command,args=[],options){return command===fixture?spawn(process.execPath,[fixture,...args],options):spawn(command,args,options)};
+const spawn=cp.spawn;cp.spawn=function(command,args=[],options){
+ if(command===fixture&&args[0]==='connect'){
+  const path=require('node:path'),home=process.env.HOME,marker=path.join(home,'fake-windows-replace-command');
+  if(fs.existsSync(path.join(home,'fake-windows-fail-connect-launch')))throw new Error('fixture connection launch failed');
+  // Recovery publishes immediately after this detached launch returns. Apply the
+  // existing replacement fault before return so the CAS race is deterministic.
+  if(fs.existsSync(marker)&&fs.readFileSync(marker,'utf8').trim()==='connect')for(const kind of ['state','lock']){
+   const target=path.join(home,'fake-windows-replace-'+kind+'-target'),source=path.join(home,'fake-windows-replace-'+kind+'-source');
+   if(fs.existsSync(target)&&fs.existsSync(source)){const destination=fs.readFileSync(target,'utf8').trim();if(kind==='lock')fs.writeFileSync(destination,JSON.stringify({...JSON.parse(fs.readFileSync(destination,'utf8')),...JSON.parse(fs.readFileSync(source,'utf8'))}));else fs.copyFileSync(source,destination);}
+  }
+ }
+ return command===fixture?spawn(process.execPath,[fixture,...args],options):spawn(command,args,options)
+};
 const fs=require('node:fs'),remove=fs.rmSync;
 fs.rmSync=function(target,options){const marker=require('node:path').join(process.env.HOME,'fake-windows-fail-scratch-remove');if(fs.existsSync(marker)&&fs.readFileSync(marker,'utf8').trim()===String(target))throw Object.assign(new Error('owned scratch removal denied'),{code:'EPERM'});return remove(target,options)};
 const write=fs.writeFileSync;fs.writeFileSync=function(target,data,...rest){if(fs.existsSync(require('node:path').join(process.env.HOME,'fake-windows-throw-upload-request'))){let value;try{value=JSON.parse(String(data))}catch{}if(['upload','cursor_position'].includes(value?.type))throw Object.assign(new Error('fixture request write failure'),{code:'EIO'});}return write(target,data,...rest)};
@@ -1468,7 +1480,7 @@ require('node:module').syncBuiltinESMExports();`);
         }
     });
 
-    it.each([undefined, { ok: false }])("recovers a missing or failed session launch while still requiring cursor readiness", { timeout: TIMEOUT }, async (helperSessionLaunch) => {
+    it.each([undefined, { ok: false }])("records one recovery connection across repeated and concurrent helper readiness failures", { timeout: TIMEOUT }, async (helperSessionLaunch) => {
         const deviceId = "session-recovery";
         await client.callTool({ name: "create_windows_sandbox", arguments: { name: "Session recovery", deviceId } });
         await client.callTool({ name: "start", arguments: { waitForBoot: false, deviceId } });
@@ -1485,9 +1497,103 @@ require('node:module').syncBuiltinESMExports();`);
             expect(probe.isError).toBe(true);
             const after = await waitForStableLog(logPath);
             expect((after.slice(before.length).match(/wsb connect --id/g) || []).length).toBe(1);
+            const recorded = JSON.parse(readFileSync(statePath, "utf8")).devices.find((device: { id: string }) => device.id === deviceId);
+            expect(recorded.helperSessionLaunch).toMatchObject({ ok: true });
+            expect(recorded.status).toBe("running");
+            expect(existsSync(recorded.helper.readyMarkerPath)).toBe(false);
+
+            const repeated = await Promise.all([0, 1].map(() => client.callTool({
+                name: "cursor_position", arguments: { deviceId, timeoutMs: 350 },
+            })));
+            for (const result of repeated) {
+                expect(result.isError).toBe(true);
+                expect(JSON.parse((result.content as Array<{ text: string }>)[0].text)).toMatchObject({ error: "windows-sandbox-helper-timeout" });
+            }
+            const finalLog = await waitForStableLog(logPath);
+            expect((finalLog.slice(after.length).match(/wsb connect --id/g) || []).length).toBe(0);
+            expect(JSON.parse(readFileSync(statePath, "utf8")).devices.find((device: { id: string }) => device.id === deviceId).helperSessionLaunch).toEqual(recorded.helperSessionLaunch);
         } finally {
             await client.callTool({ name: "stop", arguments: { deviceId } });
         }
+    });
+
+    it("keeps failed recovery launches retryable without recording a successful connection", { timeout: TIMEOUT }, async () => {
+        const deviceId = "session-launch-retry";
+        await client.callTool({ name: "create_windows_sandbox", arguments: { name: "Session launch retry", deviceId } });
+        await client.callTool({ name: "start", arguments: { waitForBoot: false, deviceId } });
+        const failureMarker = join(homeDir, "fake-windows-fail-connect-launch");
+        try {
+            await waitForLog(logPath, /wsb connect --id [0-9a-f-]{36}/);
+            const statePath = windowsStatePath();
+            const state = JSON.parse(readFileSync(statePath, "utf8"));
+            state.devices.find((device: { id: string }) => device.id === deviceId).helperSessionLaunch = { ok: false };
+            writeFileSync(statePath, JSON.stringify(state));
+            const before = await waitForStableLog(logPath);
+            writeFileSync(failureMarker, "fail");
+            const failed = await client.callTool({ name: "exec", arguments: { deviceId, command: "whoami", timeoutMs: 350 } });
+            expect(failed.isError).toBe(true);
+            expect((failed.content as Array<{ text: string }>)[0].text).toContain("fixture connection launch failed");
+            expect(JSON.parse(readFileSync(statePath, "utf8"))).toEqual(state);
+            expect(readFileSync(logPath, "utf8").slice(before.length)).not.toContain("wsb connect");
+
+            rmSync(failureMarker);
+            const retried = await client.callTool({ name: "cursor_position", arguments: { deviceId, timeoutMs: 350 } });
+            expect(retried.isError).toBe(true);
+            expect(JSON.parse((retried.content as Array<{ text: string }>)[0].text)).toMatchObject({ error: "windows-sandbox-helper-timeout" });
+            const after = await waitForStableLog(logPath);
+            expect((after.slice(before.length).match(/wsb connect --id/g) || []).length).toBe(1);
+            expect(JSON.parse(readFileSync(statePath, "utf8")).devices.find((device: { id: string }) => device.id === deviceId).helperSessionLaunch).toMatchObject({ ok: true });
+        } finally {
+            rmSync(failureMarker, { force: true });
+            await client.callTool({ name: "stop", arguments: { deviceId } });
+        }
+    });
+
+    it("preserves a successor when recovery connection publication loses its captured record", { timeout: TIMEOUT }, async () => {
+        const deviceId = "session-recovery-conflict";
+        await client.callTool({ name: "create_windows_sandbox", arguments: { name: "Session recovery conflict", deviceId } });
+        await client.callTool({ name: "start", arguments: { waitForBoot: false, deviceId } });
+        try {
+            await waitForLog(logPath, /wsb connect --id [0-9a-f-]{36}/);
+            const statePath = windowsStatePath();
+            const state = JSON.parse(readFileSync(statePath, "utf8"));
+            const current = state.devices.find((device: { id: string }) => device.id === deviceId);
+            current.helperSessionLaunch = null;
+            writeFileSync(statePath, JSON.stringify(state));
+            const successor = { ...current, sandboxId: "33333333-3333-4333-8333-333333333333", updatedAt: "successor-recovery", successorMarker: "preserve-exactly" };
+            const lockPath = join(homeDir, ".ccc", "devices", "host-locks", "windows-sandbox.json");
+            const successorLock = { ...JSON.parse(readFileSync(lockPath, "utf8")), sandboxId: successor.sandboxId, updatedAt: "successor-recovery" };
+            armWindowsReplacement("connect", statePath, successor, successorLock);
+            const before = await waitForStableLog(logPath);
+
+            const result = await client.callTool({ name: "exec", arguments: { deviceId, command: "whoami", timeoutMs: 350 } });
+            expect(result.isError).toBe(true);
+            expect((result.content as Array<{ text: string }>)[0].text).toContain("owner-device-state-conflict");
+            const after = await waitForStableLog(logPath);
+            expect((after.slice(before.length).match(/wsb connect --id/g) || []).length).toBe(1);
+            expect(after.slice(before.length)).not.toContain("wsb exec");
+            expect(after.slice(before.length)).not.toContain("wsb stop");
+            expect(JSON.parse(readFileSync(statePath, "utf8")).devices.find((device: { id: string }) => device.id === deviceId)).toEqual(successor);
+            expect(JSON.parse(readFileSync(lockPath, "utf8"))).toEqual(successorLock);
+        } finally {
+            disarmWindowsReplacement();
+            await client.callTool({ name: "stop", arguments: { deviceId } });
+        }
+    });
+
+    it("does not open another connection when a helper request targets a stopped Sandbox", { timeout: TIMEOUT }, async () => {
+        const deviceId = "session-after-stop";
+        await client.callTool({ name: "create_windows_sandbox", arguments: { name: "Session after stop", deviceId } });
+        await client.callTool({ name: "start", arguments: { waitForBoot: false, deviceId } });
+        await waitForLog(logPath, /wsb connect --id [0-9a-f-]{36}/);
+        expect((await client.callTool({ name: "stop", arguments: { deviceId } })).isError).not.toBe(true);
+        const before = await waitForStableLog(logPath);
+        const result = await client.callTool({ name: "exec", arguments: { deviceId, command: "whoami", timeoutMs: 350 } });
+        expect(result.isError).toBe(true);
+        expect((result.content as Array<{ text: string }>)[0].text).toContain("requires a running sandbox");
+        const after = await waitForStableLog(logPath);
+        expect(after.slice(before.length)).not.toMatch(/wsb (connect|exec|start)/);
+        expect(JSON.parse(readFileSync(windowsStatePath(), "utf8")).devices.find((device: { id: string }) => device.id === deviceId).status).toBe("stopped");
     });
 
     it("retries ExistingLogin without using invalid run-as modes when no Sandbox login session exists yet", { timeout: TIMEOUT }, async () => {

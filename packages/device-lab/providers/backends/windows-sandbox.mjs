@@ -1294,8 +1294,8 @@ async function windowsHelperRequest(device, type, payload = {}, requestedTimeout
     const helper = ensureHelperWorkspace(device, false);
     let bootstrapFallback = null;
     if (!existsSync(helper.readyMarkerPath)) {
-        if (!isGuid(device?.sandboxId)) {
-            return { helper, error: `Windows Sandbox helper requires a running sandbox with a valid GUID sandboxId for ${device?.id || "unknown"}`, helperDiagnostic: { stage: "sandbox-id-invalid", readyMarkerPresent: false } };
+        if (device.status !== "running" || !isGuid(device?.sandboxId)) {
+            return { helper, error: `Windows Sandbox helper requires a running sandbox with a valid GUID sandboxId for ${device?.id || "unknown"}`, helperDiagnostic: { stage: !isGuid(device?.sandboxId) ? "sandbox-id-invalid" : "sandbox-not-running", readyMarkerPresent: false } };
         }
         const discovery = windowsDiscovery();
         if (!discovery.available) {
@@ -1303,11 +1303,22 @@ async function windowsHelperRequest(device, type, payload = {}, requestedTimeout
         }
         // A .wsb-file launch or an earlier successful connect already created the viewer.
         // Missing helper readiness is not evidence that another viewer is needed.
-        const connected = device.status === "running" && device.helperSessionLaunch?.ok === true
-            ? { ok: true }
-            : launchWindowsSandboxSession(discovery.wsb, device.sandboxId, device.minimized !== false, Math.max(0, deadline - Date.now()));
-        if (!connected.ok) {
-            return { helper, error: `Windows Sandbox helper session connect launch failed: ${connected.error}`, helperDiagnostic: { stage: "session-connect-failed", readyMarkerPresent: false } };
+        if (device.helperSessionLaunch?.ok !== true) {
+            const connected = launchWindowsSandboxSession(discovery.wsb, device.sandboxId, device.minimized !== false, Math.max(0, deadline - Date.now()));
+            if (!connected.ok) {
+                return { helper, error: `Windows Sandbox helper session connect launch failed: ${connected.error}`, helperDiagnostic: { stage: "session-connect-failed", readyMarkerPresent: false } };
+            }
+            // The owner operation lock serializes helper recovery. Record the actual
+            // launch before bootstrap: a bootstrap failure must not open another viewer.
+            const transition = transitionWindowsDevice(device.id, device, {
+                ...device,
+                helperSessionLaunch: connected,
+                updatedAt: new Date().toISOString(),
+            });
+            if (!transition.matched) {
+                return { helper, error: `owner-device-state-conflict: Windows Sandbox helper session connection changed for ${device.id}`, helperDiagnostic: { stage: "session-connect-state-conflict", readyMarkerPresent: false } };
+            }
+            device = transition.device;
         }
         bootstrapFallback = await runWindowsHelperBootstrapFallback(device, helper, discovery.wsb, Math.max(0, deadline - Date.now()));
     }

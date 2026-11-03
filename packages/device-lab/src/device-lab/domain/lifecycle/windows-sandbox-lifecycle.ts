@@ -78,6 +78,8 @@ export function brokerWindowsSandboxReplacement(candidate: unknown, change: Brok
     const device = candidate as Record<string, unknown>;
     return {
         ...device, status: change.kind === 'start' ? 'running' : 'stopped',
+        // Runtime start is not an interactive connection, even when its GUID is reused.
+        helperSessionLaunch: null,
         ...(change.kind === 'start' ? {
             minimized: typeof change.minimized === 'boolean' ? change.minimized : device.minimized !== false,
             minimizeConfirmed: change.runtime.minimized && Boolean(change.confirmation && brokerWindowsSandboxCommandSucceeded(change.confirmation)),

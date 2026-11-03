@@ -64,6 +64,20 @@ describe("broker Windows Sandbox lifecycle application", () => {
         expect(f.read()).toBeNull();
         expect(f.effects).toContain("remove-artifacts");
     });
+    it("does not inherit connection success when a new runtime reuses the same Sandbox ID", async () => {
+        const f = fixture();
+        f.replace({ ...f.read(), helperSessionLaunch: { ok: true, pid: 42 } });
+        // Registration deliberately returns the requested ID again. Runtime IDs
+        // alone cannot distinguish this launch from its previous connection.
+        f.ports.listRuntime = () => ({ ok: true, ids: f.runs.some(run => run.operation === "device_start") ? [guid] : [] });
+        expect(await f.app.start(f.input("device_start"))).toMatchObject({ kind: "completed", success: true });
+        expect(f.read()).toMatchObject({ status: "running", sandboxId: guid, helperSessionLaunch: null });
+        expect(f.runs).toEqual([{ operation: "device_start", target: guid }]);
+
+        f.replace({ ...f.read(), helperSessionLaunch: { ok: true, pid: 84 } });
+        expect(await f.app.stop(f.input("device_stop"))).toMatchObject({ kind: "completed", success: true });
+        expect(f.read()).toMatchObject({ status: "stopped", helperSessionLaunch: null });
+    });
     it("blocks a preexisting requested runtime before claiming or canceling markers", async () => {
         const f = fixture(), before = f.read();
         f.ports.listRuntime = () => ({ ok: true, ids: [guid] });
