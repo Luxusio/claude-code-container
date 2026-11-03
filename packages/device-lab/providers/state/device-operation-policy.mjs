@@ -64,6 +64,8 @@ const OPERATION_TOOLS = new Map([
         "device_exec", "device_screenshot", "device_click", "device_double_click",
         "device_key", "device_type", "device_scroll", "device_cursor_position", "device_drag", "device_focus_window",
         "device_window_list", "device_accessibility_snapshot",
+        // Active recording status can recover the helper connection and publish state.
+        "device_record_video_status",
         "device_record_video_start", "device_record_video_stop", "device_upload", "device_download",
     ])],
     ["windows-vm", new Set([

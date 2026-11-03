@@ -7,6 +7,8 @@ import { tmpdir } from "os";
 import { dirname, join } from "path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { classifyWindowsSandboxHelperStderr, windowsSandboxHelperLogEvidence, launchWindowsSandboxSession, runWindowsHelperBootstrapFallback, runWindowsHelperRequestOnce, windowsMinimizedStartProcessArgs, cleanupWindowsSandboxMinimizeWatchdogs, windowsHelperScript, windowsReadyMinimizeWatchdogArgs, windowsSandboxGuestProcessStatus, windowsSandboxMinimizeWatchdogArgs, windowsSandboxRuntimeDelta, windowsSandboxSessionIdsFromListOutput, windowsWsbConfigLaunchArgs } from "@ccc/device-lab/providers/backends/windows-sandbox.mjs";
+import { ownerDeviceOperationLockFile } from "@ccc/device-lab/providers/state/device-store.mjs";
+import { withSharedMutationLockAsync } from "@ccc/device-lab/providers/state/shared-mutation-lock.mjs";
 import { installDefaultImplicitBroker } from "./helpers/device-lab-mcp-fixture.js";
 
 const repoRoot = join(__dirname, "../..");
@@ -145,6 +147,11 @@ const fs=require('node:fs'),remove=fs.rmSync;
 fs.rmSync=function(target,options){const marker=require('node:path').join(process.env.HOME,'fake-windows-fail-scratch-remove');if(fs.existsSync(marker)&&fs.readFileSync(marker,'utf8').trim()===String(target))throw Object.assign(new Error('owned scratch removal denied'),{code:'EPERM'});return remove(target,options)};
 const write=fs.writeFileSync;fs.writeFileSync=function(target,data,...rest){if(fs.existsSync(require('node:path').join(process.env.HOME,'fake-windows-throw-upload-request'))){let value;try{value=JSON.parse(String(data))}catch{}if(['upload','cursor_position'].includes(value?.type))throw Object.assign(new Error('fixture request write failure'),{code:'EIO'});}return write(target,data,...rest)};
 const rename=fs.renameSync;fs.renameSync=function(source,destination){const marker=require('node:path').join(process.env.HOME,'fake-windows-fail-download-commit');if(fs.existsSync(marker)&&fs.readFileSync(marker,'utf8')===String(destination))throw Object.assign(new Error('fixture download commit failure'),{code:'EIO'});return rename(source,destination)};
+const timers=require('node:timers/promises'),delay=timers.setTimeout;
+timers.setTimeout=function(ms,...args){
+ if(ms===10&&fs.existsSync(require('node:path').join(process.env.HOME,'fake-windows-observe-operation-lock')))fs.appendFileSync(process.env.FAKE_WINDOWS_LOG,'owner-operation-contended\\n');
+ return delay(ms,...args);
+};
 require('node:module').syncBuiltinESMExports();`);
         chmodSync(wsbPath, 0o755);
 
@@ -1513,6 +1520,83 @@ require('node:module').syncBuiltinESMExports();`);
             expect((finalLog.slice(after.length).match(/wsb connect --id/g) || []).length).toBe(0);
             expect(JSON.parse(readFileSync(statePath, "utf8")).devices.find((device: { id: string }) => device.id === deviceId).helperSessionLaunch).toEqual(recorded.helperSessionLaunch);
         } finally {
+            await client.callTool({ name: "stop", arguments: { deviceId } });
+        }
+    });
+
+    it("holds active recording status behind the owner lock and shares its first recovery connection", { timeout: TIMEOUT }, async () => {
+        const deviceId = "record-status-recovery-lock";
+        await client.callTool({ name: "create_windows_sandbox", arguments: { name: "Recording status recovery lock", deviceId } });
+        await client.callTool({ name: "start", arguments: { waitForBoot: false, deviceId } });
+        await waitForLog(logPath, /wsb connect --id [0-9a-f-]{36}/);
+        const statePath = windowsStatePath();
+        const state = JSON.parse(readFileSync(statePath, "utf8"));
+        const device = state.devices.find((item: { id: string }) => item.id === deviceId);
+        device.helperSessionLaunch = null;
+        device.recording = { active: true, sessionId: "recording-recovery-lock" };
+        writeFileSync(statePath, JSON.stringify(state));
+
+        // Resolve the real operation-lock path using the child's home while
+        // preserving the parent's project/profile and exact environment.
+        const overrides = deviceLabTestHomeEnvironment(homeDir);
+        const previous = new Map(Object.keys(overrides).map(key => [key, process.env[key]]));
+        let operationFile: string;
+        try {
+            Object.assign(process.env, overrides);
+            operationFile = ownerDeviceOperationLockFile("windows", deviceId);
+        } finally {
+            for (const [key, value] of previous) {
+                if (value === undefined) delete process.env[key];
+                else process.env[key] = value;
+            }
+        }
+        expect(dirname(operationFile)).toBe(join(dirname(statePath), "operations"));
+        let entered!: () => void;
+        let release!: () => void;
+        const enteredLock = new Promise<void>(resolve => { entered = resolve; });
+        const gate = new Promise<void>(resolve => { release = resolve; });
+        const holder = withSharedMutationLockAsync(operationFile, async () => { entered(); await gate; });
+        const observerMarker = join(homeDir, "fake-windows-observe-operation-lock");
+        const pending: Array<Promise<unknown>> = [];
+        try {
+            await Promise.race([enteredLock, holder]);
+            const before = await waitForStableLog(logPath);
+            writeFileSync(observerMarker, "observe");
+            let statusSettled = false;
+            const status = client.callTool({ name: "record_video", arguments: { action: "status", deviceId, timeoutMs: 350 } }).then(result => {
+                statusSettled = true;
+                return result;
+            });
+            const contention = waitForLog(logPath, /owner-operation-contended/);
+            pending.push(status, contention);
+            expect(await Promise.race([
+                contention.then(log => /owner-operation-contended/.test(log) ? "contended" : "not-observed"),
+                status.then(() => "settled"),
+            ])).toBe("contended");
+            expect(statusSettled).toBe(false);
+            expect(readFileSync(logPath, "utf8").slice(before.length)).not.toContain("wsb connect");
+            expect(JSON.parse(readFileSync(statePath, "utf8"))).toEqual(state);
+
+            // Both initial requests are pending while connection evidence is
+            // still absent. They must serialize recovery, not race its CAS.
+            const cursor = client.callTool({ name: "cursor_position", arguments: { deviceId, timeoutMs: 350 } });
+            pending.push(cursor);
+            release();
+            await holder;
+            const [statusResult, cursorResult] = await Promise.all([status, cursor]);
+            expect(statusResult.isError).not.toBe(true);
+            expect(JSON.parse((statusResult.content as Array<{ text: string }>)[0].text)).toMatchObject({
+                recording: { active: true }, helper: expect.stringContaining("helper did not respond"),
+            });
+            expect(cursorResult.isError).toBe(true);
+            expect(JSON.parse((cursorResult.content as Array<{ text: string }>)[0].text)).toMatchObject({ error: "windows-sandbox-helper-timeout" });
+            const after = await waitForStableLog(logPath);
+            expect((after.slice(before.length).match(/wsb connect --id/g) || []).length).toBe(1);
+            expect(JSON.parse(readFileSync(statePath, "utf8")).devices.find((item: { id: string }) => item.id === deviceId).helperSessionLaunch).toMatchObject({ ok: true });
+        } finally {
+            release();
+            await Promise.allSettled([holder, ...pending]);
+            rmSync(observerMarker, { force: true });
             await client.callTool({ name: "stop", arguments: { deviceId } });
         }
     });
