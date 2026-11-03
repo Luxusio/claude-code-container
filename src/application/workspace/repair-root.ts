@@ -477,13 +477,18 @@ export function createRootWorkspaceRepair<A extends WorkspaceRepairAuthority>(po
             ));
             if (!ports.sameExistingObject(commonDirectory.realpath, commonGitDirectory)) return false;
 
-            const expectedRef = `refs/heads/${expectedBranch}`;
-            if (ports.metadataBranchRef(headSnapshot) !== expectedRef) return false;
+            // The workspace name selects its directory, while an existing checkout
+            // may have independently switched branches. Preserve the registered HEAD.
+            const expectedRef = ports.metadataBranchRef(headSnapshot);
+            if (!expectedRef?.startsWith("refs/heads/")) return false;
             const branchHead = ports.probeBackpointerBranchHead(sourceIdentity, expectedRef);
             const expectedOid = branchHead.oid;
             if (!branchHead.succeeded || !expectedOid) {
                 return false;
             }
+            ports.throwOnLiveWorkspaceBranchConflict(
+                resolvedSource, sourceIdentity, resolvedWorkspace, expectedRef,
+            );
 
             ports.assertDirectoryIdentity(resolvedWorkspace, workspaceIdentity);
             ports.assertNestedRepositoryIdentity(resolvedSource, sourceIdentity);
@@ -518,9 +523,11 @@ export function createRootWorkspaceRepair<A extends WorkspaceRepairAuthority>(po
                 ports.assertDirectoryIdentity(resolvedWorkspace, workspaceIdentity);
                 ports.assertNestedRepositoryIdentity(resolvedSource, sourceIdentity);
                 ports.assertPathIdentity(gitFile, gitFileIdentity);
+                ports.assertFileIdentity(headFile, headIdentity);
                 ports.assertMetadataPublication(managementGitdir, installedPublication);
                 if (!currentBranchHead.succeeded
                     || currentBranchHead.oid !== expectedOid
+                    || !ports.metadataMatches(headFile, headSnapshot)
                     || !ports.metadataMatches(gitFile, gitFileSnapshot)
                     || !ports.metadataPublicationMatches(managementGitdir, installedPublication)) {
                     return false;
