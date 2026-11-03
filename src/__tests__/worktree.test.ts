@@ -8349,6 +8349,90 @@ describe("getWorktreeGitMounts", () => {
         expect(status.status).toBe(0);
     });
 
+    function compatibilityBackpointerFixture() {
+        const source = join(tmpDir, "compatibility-source");
+        const workspace = join(tmpDir, "compatibility-workspace");
+        initRepo(source);
+        const added = spawnSync("git", ["worktree", "add", "-b", "compatibility", workspace], {
+            cwd: source, encoding: "utf-8", stdio: "pipe",
+        });
+        expect(added.status, added.stderr).toBe(0);
+        const management = resolve(workspace, readFileSync(join(workspace, ".git"), "utf-8")
+            .trim().replace(/^gitdir:\s*/, ""));
+        return { source, workspace, management, compatibility: join(management, ".ccc-container-gitdir") };
+    }
+
+    it("repairs an empty generated backpointer directory and preserves usable Git metadata", () => {
+        const f = compatibilityBackpointerFixture();
+        mkdirSync(f.compatibility);
+        writeFileSync(join(f.workspace, "untracked.txt"), "work in progress\n");
+        const registration = readFileSync(join(f.management, "gitdir"));
+        const mounts = getWorktreeGitMounts(f.workspace, true, "/project/compatibility");
+        expect(lstatSync(f.compatibility).isFile()).toBe(true);
+        expect(readFileSync(f.compatibility, "utf-8")).toBe("/project/compatibility/.git\n");
+        expect(mounts.find(mount => mount.hostPath === f.compatibility)?.presence).toBe("additive");
+        expect(readFileSync(join(f.management, "gitdir"))).toEqual(registration);
+        expect(() => getWorktreeGitMounts(f.workspace, true, "/project/compatibility")).not.toThrow();
+        expect(readdirSync(f.management).filter(name => name.startsWith(".ccc-worktree-quarantine-"))).toEqual([]);
+        const status = spawnSync("git", ["status", "--porcelain"], {
+            cwd: f.workspace, encoding: "utf-8", stdio: "pipe",
+        });
+        expect(status.status, status.stderr).toBe(0);
+        expect(status.stdout).toBe("?? untracked.txt\n");
+        expect(readFileSync(join(f.workspace, "untracked.txt"), "utf-8")).toBe("work in progress\n");
+    });
+
+    it("preserves nonempty generated backpointer directories without moving their content", () => {
+        const f = compatibilityBackpointerFixture();
+        mkdirSync(f.compatibility);
+        writeFileSync(join(f.compatibility, "keep.txt"), "do not delete\n");
+        const before = lstatSync(f.compatibility, { bigint: true });
+        expect(() => getWorktreeGitMounts(f.workspace, true, "/project/compatibility"))
+            .toThrow("Container worktree backpointer is not a regular file");
+        expect(lstatSync(f.compatibility, { bigint: true }).ino).toBe(before.ino);
+        expect(readFileSync(join(f.compatibility, "keep.txt"), "utf-8")).toBe("do not delete\n");
+        expect(readdirSync(f.management).filter(name => name.startsWith(".ccc-worktree-quarantine-"))).toEqual([]);
+    });
+
+    it("preserves linked generated backpointer directories and their targets", () => {
+        const f = compatibilityBackpointerFixture();
+        const target = join(tmpDir, "external-backpointer-target");
+        mkdirSync(target);
+        directorySymlink(target, f.compatibility);
+        expect(() => getWorktreeGitMounts(f.workspace, true, "/project/compatibility"))
+            .toThrow("Container worktree backpointer is not a regular file");
+        expect(lstatSync(f.compatibility).isSymbolicLink()).toBe(true);
+        expect(readdirSync(target)).toEqual([]);
+    });
+
+    it("preserves a successor directory that replaces a generated backpointer during repair", () => {
+        const f = compatibilityBackpointerFixture();
+        mkdirSync(f.compatibility);
+        const held = join(f.management, "held-backpointer-directory");
+        const realRename = filesystem.renameSync;
+        let displaced: string | undefined;
+        const rename = vi.spyOn(filesystem, "renameSync").mockImplementation((from, to) => {
+            if (String(from) === f.compatibility && displaced === undefined) {
+                realRename(from, held);
+                mkdirSync(f.compatibility);
+                writeFileSync(join(f.compatibility, "keep.txt"), "concurrent content\n");
+                displaced = String(to);
+            }
+            return realRename(from, to);
+        });
+        syncBuiltinESMExports();
+        try {
+            expect(() => getWorktreeGitMounts(f.workspace, true, "/project/compatibility"))
+                .toThrow(/backpointer repair failed.*displaced entry preserved at/);
+        } finally {
+            rename.mockRestore();
+            syncBuiltinESMExports();
+        }
+        expect(displaced).toBeDefined();
+        expect(readFileSync(join(displaced!, "keep.txt"), "utf-8")).toBe("concurrent content\n");
+        expect(readdirSync(held)).toEqual([]);
+    });
+
     it.skipIf(process.platform === "win32")("rejects same-inode pointer mutation during ownership validation", () => {
         const repoPath = join(tmpDir, "mutation-source");
         initRepo(repoPath);
@@ -8392,12 +8476,15 @@ describe("getWorktreeGitMounts", () => {
                 .replace(/^gitdir:\s*/, ""),
         );
         writeFileSync(join(managementDirectory, "gitdir"), "/etc/passwd\n");
+        const compatibility = join(managementDirectory, ".ccc-container-gitdir");
+        mkdirSync(compatibility);
 
         expect(() => getWorktreeGitMounts(
             wtPath,
             true,
             "/project/forged-registration-source--feat-id",
         )).toThrow(/worktree metadata is invalid|registration ownership could not be verified/i);
+        expect(lstatSync(compatibility).isDirectory()).toBe(true);
     });
 
     it("returns verified mounts for every repository in a multi-repo workspace", () => {

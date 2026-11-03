@@ -6437,6 +6437,40 @@ function ensureContainerWorktreeBackpointer(
     if (pathExistsStrict(compatibilityFile)) {
         const observed = lstatSync(compatibilityFile);
         if (!observed.isFile() || observed.isSymbolicLink()) {
+            // Docker's legacy -v binds can recreate a missing file source as an
+            // empty directory after its Git registration has been replaced.
+            // This is generated metadata, but an unexpected entry may contain
+            // user data: repair only an empty real directory, without recursion.
+            if (observed.isDirectory() && !observed.isSymbolicLink()
+                && readdirSync(compatibilityFile).length === 0) {
+                const identity = captureDirectoryIdentity(compatibilityFile);
+                const quarantine = createPrivateQuarantine(
+                    compatibilityFile,
+                    managementDirectory,
+                );
+                try {
+                    assertDirectoryIdentity(managementDirectory, parentIdentity);
+                    assertDirectoryIdentity(compatibilityFile, identity);
+                    if (readdirSync(compatibilityFile).length !== 0) {
+                        throw new Error("Container worktree backpointer directory is no longer empty");
+                    }
+                    renameSync(compatibilityFile, quarantine.path);
+                    assertQuarantinedIdentity(quarantine.path, identity, "directory");
+                    // rmdir also rejects content added after the emptiness check.
+                    rmdirSync(quarantine.path);
+                    removePrivateQuarantine(quarantine);
+                } catch (error) {
+                    const preserved = pathExistsStrict(quarantine.path);
+                    if (!preserved && pathExistsStrict(quarantine.directory)) removePrivateQuarantine(quarantine);
+                    throw new Error(
+                        `Container worktree backpointer repair failed: ${compatibilityFile}`
+                        + (preserved ? `; displaced entry preserved at ${quarantine.path}` : ""),
+                        { cause: error },
+                    );
+                }
+                assertDirectoryIdentity(managementDirectory, parentIdentity);
+                return ensureContainerWorktreeBackpointer(managementDirectory, containerGitFile);
+            }
             throw new Error(
                 `Container worktree backpointer is not a regular file: ${compatibilityFile}`,
             );
