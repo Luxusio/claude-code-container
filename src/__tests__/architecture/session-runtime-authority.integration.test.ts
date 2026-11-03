@@ -5,6 +5,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync,
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import type { NativeRuntimeInvocation } from "../../ports/container-runtime-invocation.js";
 
 // Use the normal build output, with an explicit override for isolated graphs.
 // This fixture never substitutes Source modules for genuine emitted code.
@@ -23,7 +24,7 @@ const selectors = [
     "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "no_proxy", "all_proxy",
 ] as const;
 
-interface Trace { executable: "A" | "B"; args: string[]; endpoint: string; command: string; id?: string; claimsAtStop?: string[]; }
+interface Trace { executable: "A" | "B"; args: string[]; endpoint: string; command: string; path: string; id?: string; claimsAtStop?: string[]; }
 interface Owner { child: ChildProcess; messages: Array<Record<string, unknown>>; output: string; }
 
 async function eventually(predicate: () => boolean, description: string): Promise<void> {
@@ -85,7 +86,7 @@ while (offset < raw.length) {
 const args = raw.slice(offset);
 const endpoint = host || process.env.DOCKER_HOST || readFileSync(${JSON.stringify(alias)}, 'utf8');
 const lockDirectory = ${JSON.stringify(join(home, ".ccc", "run", "locks"))};
-appendFileSync(${JSON.stringify(log)}, JSON.stringify({ executable: ${JSON.stringify(executable)}, args: raw, endpoint, command: args[0], id: args[1],
+appendFileSync(${JSON.stringify(log)}, JSON.stringify({ executable: ${JSON.stringify(executable)}, args: raw, endpoint, command: args[0], path: process.env.PATH, id: args[1],
     ...(args[0] === 'stop' ? {claimsAtStop: readdirSync(lockDirectory).filter(name => name.endsWith('.lock')).sort()} : {}) }) + '\\n');
 if (args[0] === 'context' && args[1] === 'inspect') {
     console.log(JSON.stringify({ Name: 'mutable', Endpoints: { docker: { Host: readFileSync(${JSON.stringify(alias)}, 'utf8'), SkipTLSVerify: false } },
@@ -361,11 +362,11 @@ process.on('message', async message => {
         rmSync(root, { recursive: true, force: true });
     });
 
-    function launch(mode: string): Owner {
-        if (!mode.startsWith("recover") && mode !== "query") writeFileSync(alias, endpointA);
+    function launch(mode: string, options: { endpoint?: string; extraPath?: string } = {}): Owner {
+        if (!mode.startsWith("recover") && mode !== "query") writeFileSync(alias, options.endpoint ?? endpointA);
         const child = spawn(process.execPath, [ownerScript, mode], {
             cwd: root,
-            env: { HOME: home, USERPROFILE: home, PATH: binA + ":" + dirname(process.execPath) + ":/usr/bin:/bin",
+            env: { HOME: home, USERPROFILE: home, PATH: binA + ":" + dirname(process.execPath) + ":/usr/bin:/bin" + (options.extraPath ? ":" + options.extraPath : ""),
                 DOCKER_CONTEXT: "mutable", DOCKER_CONFIG: join(root, "config-a"),
                 TMPDIR: root, TMP: root, TEMP: root, CCC_DEVICE_BROKER_AUTO_START: "0",
                 ...(mode === "older-ack-failed" || mode.startsWith("delayed-") ? {NODE_OPTIONS: "--require " + JSON.stringify(ipcFaultPreload)} : {}) },
@@ -752,6 +753,63 @@ process.on('message', async message => {
         expect(stops()[0]!.claimsAtStop).toEqual([claims[0]!.split("/").at(-1)]);
         expect(claims.every(path => !existsSync(path))).toBe(true);
         expect(engineState()[endpointA]![exactId]).toBe(false);
+        expect(engineState()[endpointB]![exactId]).toBe(true);
+    }, 30_000);
+
+    it("public acquisition recovers dead local Docker obligations differing only in captured PATH with one exact stop", async () => {
+        const localEndpoint = "unix://" + join(root, "owned-engine.sock");
+        writeFileSync(state, JSON.stringify({ ...engineState(), [localEndpoint]: { [exactId]: true } }));
+        const first = launch("guardian", { endpoint: localEndpoint, extraPath: join(root, "first-path") });
+        const firstReady = await frame(first, "ready");
+        const second = launch("guardian", { endpoint: localEndpoint, extraPath: join(root, "second-path") });
+        const secondReady = await frame(second, "ready");
+        const cohort = [firstReady, secondReady];
+        const claims = cohort.map(item => String(item.lock)).sort();
+        const invocations = claims.map(claim => JSON.parse(readFileSync(claim + ".runtime.json", "utf8")) as NativeRuntimeInvocation);
+        expect(invocations[0]!.selectors.PATH).not.toBe(invocations[1]!.selectors.PATH);
+        expect(invocations[0]).toEqual({ ...invocations[1], selectors: {
+            ...invocations[1]!.selectors, PATH: invocations[0]!.selectors.PATH,
+        } });
+        expect(invocations[0]).toMatchObject({ executable: join(binA, "docker"), transport: { host: localEndpoint } });
+        const observations = claims.map(claim => JSON.parse(readFileSync(claim + ".guardian.json", "utf8")));
+        expect(observations[0].runtime.digest).not.toBe(observations[1].runtime.digest);
+        for (const observation of observations) expect(observation).toMatchObject({ registration: "ready", pending: null,
+            lastAcknowledged: { generation: observation.generation, cleanupEnabled: true, containerId: exactId } });
+
+        const parentTokens = [first, second].map(owner => token(owner.child.pid!));
+        for (const identity of parentTokens) expect(identity).toBeTypeOf("string");
+        for (const item of cohort) {
+            const pid = Number(item.guardian);
+            expect(guardians.get(pid)).toBeTypeOf("string");
+            expect(token(pid)).toBe(guardians.get(pid));
+            process.kill(pid, "SIGSTOP");
+        }
+        for (const [index, owner] of [first, second].entries()) {
+            expect(token(owner.child.pid!)).toBe(parentTokens[index]);
+            owner.child.kill("SIGKILL");
+        }
+        for (const owner of [first, second]) await eventually(() => owner.child.signalCode !== null, "local cohort parent death");
+        for (const item of cohort) {
+            const pid = Number(item.guardian);
+            expect(token(pid)).toBe(guardians.get(pid));
+            process.kill(pid, "SIGKILL");
+            await eventually(() => token(pid) === undefined, "local cohort guardian death");
+        }
+        expect(claims.every(claim => existsSync(claim))).toBe(true);
+        expect(stops()).toEqual([]);
+
+        const successor = launch("recover");
+        await eventually(() => successor.messages.some(message => ["ready", "acquisition-failed"].includes(String(message.event))), "local cohort recovery");
+        expect(successor.messages.find(message => message.event === "acquisition-failed"), successor.output).toBeUndefined();
+        await frame(successor, "ready");
+        expect(stops()).toHaveLength(1);
+        expect(stops()[0]).toMatchObject({ executable: "A", endpoint: localEndpoint, id: exactId,
+            path: invocations[0]!.selectors.PATH, claimsAtStop: [claims[0]!.split("/").at(-1)] });
+        expect(stops()[0]!.args).toContain("--tlsverify=true");
+        expect(stops()[0]!.args).toContain("--tlscacert=" + join(root, "tls", "docker", "ca.pem"));
+        for (const claim of claims) for (const suffix of ["", ".guardian.json", ".runtime.json"]) expect(existsSync(claim + suffix)).toBe(false);
+        expect(engineState()[localEndpoint]![exactId]).toBe(false);
+        expect(engineState()[endpointA]![exactId]).toBe(true);
         expect(engineState()[endpointB]![exactId]).toBe(true);
     }, 30_000);
 

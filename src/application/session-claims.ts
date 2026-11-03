@@ -2,6 +2,7 @@ import { encodeSessionClaim, sessionClaimName, sessionClaimPrefix, sessionLockCl
     sessionLockClaimsForProjectFamily } from "../domain/session-claims.js";
 import { canTransferSessionClaimObligation, currentSessionClaimAuthority, selectSessionClaimRecoverySurvivor,
     sessionClaimPeerVetoes } from "../domain/session-claim-observation.js";
+import type { SessionClaimRuntimeEquality } from "../domain/session-claim-observation.js";
 import { sessionLockOwner, type SessionLockLiveness, type SessionLockOwner } from "../domain/session-lock.js";
 import type { NativeRuntimeInvocation } from "../ports/container-runtime-invocation.js";
 import type { SessionClaimObservationSnapshot } from "../ports/session-claim-observation.js";
@@ -13,17 +14,20 @@ const incomplete = (detail: string, cause?: unknown): Error => new Error(
     `session-cleanup-responsibility-incomplete: ${detail}`, { cause });
 
 function sameRuntime(left: NativeRuntimeInvocation, right: NativeRuntimeInvocation): boolean {
-    // Both values have passed the native decoder. Equality includes executable,
-    // every selector and transport field, rather than just an endpoint name.
-    return JSON.stringify(left) === JSON.stringify(right);
+    // Both values have passed the native decoder. The absolute executable and
+    // closed Docker local transport are replayed with explicit config/host/TLS
+    // flags, so selector capture differences do not select a different engine.
+    if (left.version !== right.version || left.runtime !== right.runtime || left.executable !== right.executable
+        || JSON.stringify(left.transport) !== JSON.stringify(right.transport)) return false;
+    return left.runtime === "docker" && left.transport.kind === "docker" && /^(?:unix|npipe):/i.test(left.transport.host)
+        || JSON.stringify(left.selectors) === JSON.stringify(right.selectors);
 }
 
-function cleanupFailureCode(error: unknown, depth = 0): string {
-    if (!(error instanceof Error) || depth > 5) return "cleanup-error";
-    const message = error.message;
+function cleanupFailureCode(error: unknown): string {
     // Only fixed internal categories reach the public aggregate. Neither native
     // stderr nor arbitrary nested exception text is suitable for that message.
     const categories: ReadonlyArray<readonly [string, RegExp]> = [
+        ["runtime-authority-conflict", /^session-cleanup-responsibility-incomplete: The same opaque container ID has different captured native authorities\.$/],
         ["peer-veto-no-successor", /^session-cleanup-responsibility-incomplete: Exact container shutdown is blocked and no qualified successor owns its cleanup responsibility\.$/],
         ["native-state-unverified", /^Container shutdown state could not be verified;/],
         ["native-state-ambiguous", /^Container shutdown state is ambiguous;/],
@@ -32,8 +36,28 @@ function cleanupFailureCode(error: unknown, depth = 0): string {
         ["evidence-changed", /^(?:Session claim observation is absent, unreadable, or replaced\.|Session ownership receipt changed before removal\.|session-cleanup-responsibility-incomplete: The captured (?:main claim is absent or replaced|cleanup observation or runtime is unavailable or different)\.)$/],
         ["retirement-incomplete", /^session-cleanup-responsibility-incomplete: (?:Cleanup returned without retiring the captured claim|The current exact cleanup responsibility has neither completed nor transferred)\.$/],
     ];
-    for (const [code, pattern] of categories) if (pattern.test(message)) return code;
-    return cleanupFailureCode(error.cause, depth + 1);
+    const filesystemCodes = new Set(["EACCES", "EPERM", "EBUSY", "ENOENT", "EIO", "ENOTEMPTY", "EEXIST", "EINVAL", "ETIMEDOUT"]);
+    const filesystemSyscalls = new Set(["open", "read", "write", "stat", "lstat", "fstat", "rename", "unlink", "rmdir", "mkdir", "scandir", "fsync", "close"]);
+    const pending: Array<{ error: unknown; depth: number }> = [{ error, depth: 0 }];
+    const seen = new Set<Error>();
+    for (let index = 0; index < pending.length && seen.size < 32; index++) {
+        const current = pending[index];
+        if (!(current.error instanceof Error) || current.depth > 8 || seen.has(current.error)) continue;
+        const failure = current.error as Error & { code?: unknown; syscall?: unknown };
+        seen.add(failure);
+        for (const [code, pattern] of categories) if (pattern.test(failure.message)) return code;
+        if (typeof failure.code === "string" && filesystemCodes.has(failure.code)
+            && typeof failure.syscall === "string" && filesystemSyscalls.has(failure.syscall)) {
+            return `filesystem-${failure.syscall}-${failure.code.toLowerCase()}`;
+        }
+        if (current.depth < 8) {
+            pending.push({ error: failure.cause, depth: current.depth + 1 });
+            if (failure instanceof AggregateError) {
+                for (const child of failure.errors.slice(0, 8)) pending.push({ error: child, depth: current.depth + 1 });
+            }
+        }
+    }
+    return "cleanup-error";
 }
 
 export interface RestrictedSessionAdmission {
@@ -154,17 +178,28 @@ export function createSessionClaims(ports: SessionClaimsPorts) {
         const source = own.snapshot;
         if (!source || currentSessionClaimAuthority(source.observation)?.containerId !== pinnedId
             || !sameRuntime(source.runtimeInvocation, runtimeInvocation)) return null;
+        const sameCapturedRuntime = qualifiedRuntimeEquality(claims.flatMap(peer => peer.snapshot ? [peer.snapshot] : []));
         const eligible = claims.filter(peer => peer !== own && peer.snapshot
             && sameRuntime(peer.snapshot.runtimeInvocation, runtimeInvocation)
-            && canTransferSessionClaimObligation(source.observation, peer.snapshot.observation));
+            && canTransferSessionClaimObligation(source.observation, peer.snapshot.observation, sameCapturedRuntime));
         const continuing = eligible.find(peer => peer.parent === "active" || peer.guardian === "active");
         if (continuing?.snapshot) return continuing.snapshot;
         if (own.parent !== "stale" || own.guardian !== "stale") return null;
         const cohort = claims.filter(peer => peer.snapshot && peer.parent === "stale" && peer.guardian === "stale"
             && currentSessionClaimAuthority(peer.snapshot.observation)?.containerId === pinnedId);
         if (cohort.some(peer => !sameRuntime(peer.snapshot!.runtimeInvocation, runtimeInvocation))) return null;
-        const survivor = selectSessionClaimRecoverySurvivor(cohort.map(peer => peer.snapshot!.observation));
+        const survivor = selectSessionClaimRecoverySurvivor(cohort.map(peer => peer.snapshot!.observation), sameCapturedRuntime);
         return eligible.find(peer => peer.snapshot!.observation.claim.path === survivor?.claim.path)?.snapshot ?? null;
+    }
+
+    function qualifiedRuntimeEquality(snapshots: readonly SessionClaimObservationSnapshot[]): SessionClaimRuntimeEquality {
+        const native = responsibility();
+        return (from, to) => {
+            const source = snapshots.find(snapshot => snapshot.observation === from);
+            const target = snapshots.find(snapshot => snapshot.observation === to);
+            return !!source && !!target && native.observationStore.matches(source) && native.observationStore.matches(target)
+                && sameRuntime(source.runtimeInvocation, target.runtimeInvocation);
+        };
     }
 
     function peerVetoesInHeldLifecycleLock(prefix: string, ownPath: string, pinnedId: string | null,
@@ -499,7 +534,7 @@ export function createSessionClaims(ports: SessionClaimsPorts) {
                         throw incomplete("The same opaque container ID has different captured native authorities.");
                     }
                     const selected = group.length === 1 ? group[0].observation
-                        : selectSessionClaimRecoverySurvivor(group.map(item => item.observation));
+                        : selectSessionClaimRecoverySurvivor(group.map(item => item.observation), qualifiedRuntimeEquality(group));
                     if (!selected) throw incomplete("Dead duplicate responsibilities have no qualified recovery survivor.");
                     const survivor = group.find(item => item.receipt.path === selected.claim.path)!;
                     for (const item of group) {

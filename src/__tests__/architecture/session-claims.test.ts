@@ -34,6 +34,16 @@ function invocation(host = "unix:///captured-a.sock"): NativeRuntimeInvocation {
     };
 }
 
+function windowsInvocation(path: string): NativeRuntimeInvocation {
+    return {
+        ...invocation("npipe:////./pipe/dockerDesktopLinuxEngine"),
+        executable: "C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe",
+        transport: { kind: "docker", host: "npipe:////./pipe/dockerDesktopLinuxEngine", configDirectory: "C:\\Users\\owner\\.docker",
+            tls: { enabled: false, verify: false, caFile: null, certFile: null, keyFile: null } },
+        selectors: { ...invocation().selectors, PATH: path },
+    };
+}
+
 /** In-memory core ports: these tests prove policy/effect ordering, not native file or IPC qualification. */
 function fixture(entries: string[] = [], contents: Record<string, string> = {}) {
     const trace: string[] = [];
@@ -645,6 +655,51 @@ describe("project-scoped automatic legacy reconciliation", () => {
 });
 
 describe("obligation transfer retains a responsible successor", () => {
+    it.each(["npipe", "unix"] as const)("settles an all-dead Docker %s cohort with differing captured PATH bytes through one exact stop", transport => {
+        const f = fixture([other, old], { [old]: monitored(7), [other]: monitored(8) });
+        const native = windowsInvocation("C:\\Windows;C:\\tools\\first");
+        const firstInvocation = transport === "npipe" ? native : { ...invocation(), selectors: native.selectors };
+        const secondInvocation = { ...firstInvocation, selectors: { ...firstInvocation.selectors, PATH: "C:\\Windows;C:\\tools\\second" } };
+        const survivor = f.attach(old, {}, firstInvocation), redundant = f.attach(other, {}, secondInvocation);
+        expect(survivor.observation.runtime.digest).not.toBe(redundant.observation.runtime.digest);
+        const before = JSON.stringify([survivor, redundant]);
+        for (const snapshot of [survivor, redundant]) { f.dead(snapshot.receipt.ownerPid); f.dead(snapshot.observation.guardian.pid); }
+        const effects = policyCleanup(f);
+        const replayed: SessionClaimObservationSnapshot[] = [], cleanup = f.ports.responsibility!.cleanup;
+        f.ports.responsibility!.cleanup = snapshot => { replayed.push(snapshot); cleanup(snapshot); };
+        expect(f.recover()).toEqual([]);
+        expect(effects).toEqual(["cleanup", "devices", "stop"]);
+        expect(replayed).toEqual([survivor]); expect(replayed[0]).toBe(survivor);
+        expect(replayed[0].runtimeInvocation).toBe(firstInvocation);
+        expect(JSON.stringify([survivor, redundant])).toBe(before);
+        expect(f.removals).toEqual([`/claims/${other}`, `/claims/${old}`]);
+        expect(f.receipts.size).toBe(0); expect(f.snapshots.size).toBe(0);
+    });
+
+    it("transfers a local Docker obligation across PATH differences to the live true successor without changing either record", () => {
+        const f = fixture([old, other], { [old]: monitored(7), [other]: monitored(8) });
+        const source = f.attach(old, {}, windowsInvocation("C:\\first"));
+        const target = f.attach(other, {}, windowsInvocation("C:\\second"));
+        const before = JSON.stringify([source, target]);
+        f.alive(8, "owner-start"); f.alive(target.observation.guardian.pid, "guardian-start");
+        const effects = policyCleanup(f);
+        f.inGuard(() => f.ports.responsibility!.cleanup(source));
+        expect(effects).toEqual(["cleanup"]); expect(f.names).toEqual([other]);
+        expect(f.snapshots.get(other)).toBe(target); expect(JSON.stringify([source, target])).toBe(before);
+    });
+
+    it("a local Docker authority match cannot transfer to a successor whose captured evidence no longer matches", () => {
+        const f = fixture([old, other], { [old]: monitored(7), [other]: monitored(8) });
+        const source = f.attach(old, {}, windowsInvocation("C:\\first"));
+        const target = f.attach(other, {}, windowsInvocation("C:\\second"));
+        f.alive(8, "owner-start"); f.alive(target.observation.guardian.pid, "guardian-start");
+        const store = f.ports.responsibility!.observationStore, matches = store.matches;
+        store.matches = snapshot => snapshot !== target && matches(snapshot);
+        const veto = f.inGuard(() => f.app.peerVetoesInHeldLifecycleLock("project", source.receipt.path, fullId, source.runtimeInvocation));
+        expect(veto).toEqual({sharedDeviceCleanupBlocked: true, exactContainerStopBlocked: true, responsibilityTransferred: false});
+        expect(f.names).toEqual([old, other]); expect(f.removals).toEqual([]);
+    });
+
     it("a missing own ledger never borrows permission from an otherwise independent peer", () => {
         const f = fixture([old, other], { [old]: monitored(7), [other]: monitored(8) });
         f.attach(other, { lastAcknowledged: { generation, sequence: 1, containerId: differentId, cleanupEnabled: true } });
@@ -685,12 +740,31 @@ describe("obligation transfer retains a responsible successor", () => {
         expect(veto).toEqual({ sharedDeviceCleanupBlocked: true, exactContainerStopBlocked: true, responsibilityTransferred: false });
         expect(f.names).toEqual([old, other]);
     });
-    it("same-ID obligations with different captured authorities cannot discard either all-dead receipt", () => {
+    it.each(["endpoint", "executable", "tls", "config", "tcp-PATH", "tcp-proxy", "ssh-PATH", "ssh-helper", "podman-local-PATH", "podman-remote-PATH"] as const)(
+        "same-ID obligations with different %s authority cannot discard either all-dead receipt", difference => {
         const f = fixture([old, other], { [old]: monitored(7), [other]: monitored(8) });
-        const first = f.attach(old);
-        const second = f.attach(other, {}, invocation("unix:///different-authority.sock"));
+        let native = invocation();
+        if (difference.startsWith("tcp-")) native = invocation("tcp://captured-engine:2376");
+        if (difference.startsWith("ssh-")) native = invocation("ssh://engine.example");
+        if (difference === "podman-local-PATH") native = { ...native, runtime: "podman", executable: "/captured/bin/podman",
+            transport: { kind: "podman-local", graphRoot: "/captured/graph", runRoot: "/captured/run", storageDriver: "overlay", storageOptions: [], transientStore: false } };
+        if (difference === "podman-remote-PATH") native = { ...native, runtime: "podman", executable: "/captured/bin/podman",
+            transport: { kind: "podman-remote", url: "unix:///podman.sock", identityFile: null, machine: false,
+                tls: { caFile: null, certFile: null, keyFile: null } } };
+        let changed: NativeRuntimeInvocation = { ...native, selectors: { ...native.selectors, PATH: "/different/bin" } };
+        if (difference === "endpoint") changed = invocation("unix:///different-authority.sock");
+        if (difference === "executable") changed = { ...native, executable: "/different/bin/docker" };
+        if (difference === "tls" && native.transport.kind === "docker") changed = { ...native,
+            transport: { ...native.transport, tls: { ...native.transport.tls, enabled: true, verify: true, caFile: "/captured/ca.pem" } } };
+        if (difference === "config" && native.transport.kind === "docker") changed = { ...native,
+            transport: { ...native.transport, configDirectory: "/different/config" } };
+        if (difference === "tcp-proxy") changed = { ...native, selectors: { ...native.selectors, HTTP_PROXY: "http://other-proxy:8080" } };
+        if (difference === "ssh-helper") changed = { ...native, selectors: { ...native.selectors, DOCKER_SSH_COMMAND: "/different/ssh" } };
+        const first = f.attach(old, {}, native), second = f.attach(other, {}, changed);
         for (const snapshot of [first, second]) { f.dead(snapshot.receipt.ownerPid); f.dead(snapshot.observation.guardian.pid); }
-        expect(f.recover).toThrow(/session-cleanup-responsibility-incomplete/);
+        const result = f.inGuard(() => f.app.reconcileSessionClaimsInHeldLifecycleLock("project"));
+        expect(result.error?.message).toContain("qualified monitored cleanup failed [runtime-authority-conflict]");
+        expect(result.error?.message).not.toContain("captured-engine");
         expect(f.names).toEqual([old, other]);
         expect(f.removals).toEqual([]);
         expect(f.cleanups).toEqual([]);
@@ -878,6 +952,29 @@ describe("retained pending cohort admission", () => {
         expect(effects).toEqual(["cleanup", "devices", "stop"]); expect(f.removals).toEqual([`/claims/${old}`]);
         expect(f.snapshots.has(old)).toBe(false);
     });
+    it.each(["aggregate-filesystem", "unknown-code", "unknown-syscall", "cycle", "depth-limit", "child-limit", "node-limit"] as const)(
+        "reports only a bounded fixed diagnostic for %s while preserving the cleanup failure", kind => {
+            const f = fixture([old], {[old]: monitored(7)}), snapshot = f.attach(old);
+            f.dead(7); f.dead(snapshot.observation.guardian.pid);
+            const privateText = "private C:\\secret\\claim.lock STDERR TOKEN=private";
+            const filesystem = Object.assign(new Error(privateText), { code: "EPERM", syscall: "unlink", path: privateText });
+            let failure: Error = new AggregateError([new Error(privateText), filesystem], privateText);
+            if (kind === "unknown-code") failure = Object.assign(new Error(privateText), { code: privateText, syscall: "unlink" });
+            if (kind === "unknown-syscall") failure = Object.assign(new Error(privateText), { code: "EPERM", syscall: privateText });
+            if (kind === "cycle") { const cyclic = new AggregateError([], privateText); cyclic.cause = cyclic; cyclic.errors.push(cyclic); failure = cyclic; }
+            if (kind === "depth-limit") { failure = filesystem; for (let index = 0; index < 9; index++) failure = new Error(privateText, {cause: failure}); }
+            if (kind === "child-limit") failure = new AggregateError([...Array.from({length: 8}, () => new Error(privateText)), filesystem], privateText);
+            if (kind === "node-limit") failure = new AggregateError(Array.from({length: 8}, () => new AggregateError(
+                Array.from({length: 8}, () => new Error(privateText, {cause: filesystem})), privateText)), privateText);
+            const effects = policyCleanup(f, failure);
+            const result = f.inGuard(() => f.app.reconcileSessionClaimsInHeldLifecycleLock("project"));
+            const code = kind === "aggregate-filesystem" ? "filesystem-unlink-eperm" : "cleanup-error";
+            expect(result.error?.message).toContain(`qualified monitored cleanup failed [${code}]`);
+            expect(result.error?.message).not.toContain("private"); expect(result.error?.message).not.toContain("EPERM");
+            expect(result.restrictedAdmission).toBeUndefined(); expect(f.names).toEqual([old]); expect(f.removals).toEqual([]);
+            expect(effects).toEqual(["cleanup", "devices", "stop"]);
+        },
+    );
     it.each(["retirement", "publication", "unclassified-stop"] as const)("does not turn a no-anchor %s error into admission or expose arbitrary private detail", fault => {
         const f = fixture([old], {[old]: monitored(7)}), snapshot = f.attach(old);
         f.dead(7); f.dead(snapshot.observation.guardian.pid);
@@ -930,6 +1027,21 @@ describe("retained cleanup responsibility beside a live passive session", () => 
         f.inGuard(() => result.restrictedAdmission!.revalidate());
         expect(JSON.stringify([...f.snapshots])).toBe(before);
         expect(effects).toEqual([]); expect(f.removals).toEqual([]); expect(f.names).toEqual([old, other]);
+    });
+
+    it("keeps a live passive Docker npipe peer protective across captured PATH differences", () => {
+        const {f, scope, effects} = passivePair();
+        const predecessor = f.attach(old, {}, windowsInvocation("C:\\first"));
+        const peer = f.attach(other, {lastAcknowledged: {generation, sequence: 1, containerId: fullId, cleanupEnabled: false}}, windowsInvocation("C:\\second"));
+        const selectedScope = { ...scope, runtimeInvocation: windowsInvocation("C:\\current") };
+        const before = JSON.stringify([...f.snapshots]);
+        const result = f.inGuard(() => f.app.reconcileSessionClaimsInHeldLifecycleLock("project", undefined, selectedScope));
+        expect(result.restrictedAdmission?.containerId).toBe(fullId);
+        f.inGuard(() => result.restrictedAdmission!.revalidate());
+        const veto = f.inGuard(() => f.app.peerVetoesInHeldLifecycleLock("project", predecessor.receipt.path, fullId, predecessor.runtimeInvocation));
+        expect(veto.responsibilityTransferred).toBe(false); expect(veto.exactContainerStopBlocked).toBe(true);
+        expect(f.snapshots.get(other)).toBe(peer); expect(JSON.stringify([...f.snapshots])).toBe(before);
+        expect(effects).toEqual([]); expect(f.removals).toEqual([]);
     });
 
     it("uses an acknowledged current reservation as the passive peer without adding it to the old cohort", () => {

@@ -131,16 +131,22 @@ export function sessionClaimPeerVetoes(ownContainerId: string | null, peers: rea
     }) };
 }
 
-export function canTransferSessionClaimObligation(from: SessionClaimObservation, to: SessionClaimObservation): boolean {
+export type SessionClaimRuntimeEquality = (from: SessionClaimObservation, to: SessionClaimObservation) => boolean;
+
+const sameRuntimeDigest: SessionClaimRuntimeEquality = (from, to) => from.runtime.digest === to.runtime.digest;
+
+export function canTransferSessionClaimObligation(from: SessionClaimObservation, to: SessionClaimObservation,
+    sameRuntime: SessionClaimRuntimeEquality = sameRuntimeDigest): boolean {
     const source = currentSessionClaimAuthority(from);
     const target = to.lastAcknowledged;
     return from.claim.path !== to.claim.path && source !== null && to.registration === "ready" && to.pending === null
         && target?.generation === to.generation && target.cleanupEnabled && target.containerId === source.containerId
-        && from.runtime.digest === to.runtime.digest && from.binding.prefix === to.binding.prefix;
+        && sameRuntime(from, to) && from.binding.prefix === to.binding.prefix;
 }
 
 /** Called only for the qualified, positively dead cohort. Differing authorities remain incomplete. */
-export function selectSessionClaimRecoverySurvivor(observations: readonly SessionClaimObservation[]): SessionClaimObservation | null {
+export function selectSessionClaimRecoverySurvivor(observations: readonly SessionClaimObservation[],
+    sameRuntime: SessionClaimRuntimeEquality = sameRuntimeDigest): SessionClaimObservation | null {
     if (!observations.length) return null;
     const eligible = observations.filter(item => item.registration === "ready" && item.pending === null
         && item.lastAcknowledged?.generation === item.generation && item.lastAcknowledged.cleanupEnabled
@@ -148,5 +154,5 @@ export function selectSessionClaimRecoverySurvivor(observations: readonly Sessio
         && currentSessionClaimAuthority(item)?.containerId === item.lastAcknowledged.containerId);
     const survivor = [...eligible].sort((a, b) => a.claim.path < b.claim.path ? -1 : a.claim.path > b.claim.path ? 1 : 0)[0];
     if (!survivor) return null;
-    return observations.every(item => item === survivor || canTransferSessionClaimObligation(item, survivor)) ? survivor : null;
+    return observations.every(item => item === survivor || canTransferSessionClaimObligation(item, survivor, sameRuntime)) ? survivor : null;
 }

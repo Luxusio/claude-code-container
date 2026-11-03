@@ -120,6 +120,25 @@ describe("durable guardian authority", () => {
         expect(selectSessionClaimRecoverySurvivor([a, c, b])?.claim.path).toBe(a.claim.path);
         expect(selectSessionClaimRecoverySurvivor([a, { ...b, runtime: { ...b.runtime, digest: "e".repeat(64) } }])).toBeNull();
     });
+
+    it("requires an explicit qualified runtime comparison before transferring different runtime digests", () => {
+        const predecessor = observation("/claims/project--b.lock");
+        const successor = { ...observation("/claims/project--a.lock"),
+            runtime: { ...observation().runtime, digest: "e".repeat(64) } };
+        const sameCapturedAuthority = (from: SessionClaimObservation, to: SessionClaimObservation) =>
+            from === predecessor && to === successor;
+
+        expect(canTransferSessionClaimObligation(predecessor, successor)).toBe(false);
+        expect(selectSessionClaimRecoverySurvivor([predecessor, successor])).toBeNull();
+        expect(canTransferSessionClaimObligation(predecessor, successor, sameCapturedAuthority)).toBe(true);
+        expect(selectSessionClaimRecoverySurvivor([predecessor, successor], sameCapturedAuthority)).toBe(successor);
+        expect(selectSessionClaimRecoverySurvivor([predecessor, successor], () => false)).toBeNull();
+        expect(canTransferSessionClaimObligation(predecessor, { ...successor,
+            lastAcknowledged: { ...successor.lastAcknowledged!, cleanupEnabled: false },
+        }, sameCapturedAuthority)).toBe(false);
+        expect(predecessor.runtime.digest).toBe("d".repeat(64));
+        expect(successor.runtime.digest).toBe("e".repeat(64));
+    });
 });
 
 describe("private native guardian evidence store", () => {
