@@ -1040,6 +1040,11 @@ export function launchWindowsSandboxSession(wsb, sandboxId, minimized = true, ti
             stdio: "ignore",
             windowsHide: useHiddenPowerShell,
         });
+        // Node reports a failed spawn asynchronously and leaves its PID unset.
+        child.once?.("error", () => {});
+        if (!Number.isSafeInteger(child.pid) || child.pid <= 0) {
+            return { ok: false, error: "session-connect-launcher-failed" };
+        }
         child.unref();
         return { ok: true, pid: child.pid };
     } catch (error) {

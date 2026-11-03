@@ -2,6 +2,7 @@ import { fileSymlinkOrSkip } from "./helpers/file-symlink-fixture.js";
 import { deviceLabTestHomeEnvironment } from "./helpers/device-lab-test-environment.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { ChildProcess } from "node:child_process";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, truncateSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { dirname, join } from "path";
@@ -127,7 +128,11 @@ const cp=require('node:child_process');const fixture=${JSON.stringify(wsbPath)};
 const sync=cp.spawnSync;
 cp.spawnSync=function(command,args=[],options){
  const lookup=command==='where'?args[0]:command==='/bin/sh'&&args[0]==='-c'&&args[1]?.startsWith('command -v ')?args[1].slice(11):null;
- if(lookup!==null)return {status:lookup==='wsb'?0:1,stdout:lookup==='wsb'?fixture+'\\n':'',stderr:''};
+ if(lookup!==null){
+  const nativePath=require('node:path').join(process.env.HOME,'fake-windows-native-wsb');
+  const discovered=lookup==='wsb'&&fs.existsSync(nativePath)?fs.readFileSync(nativePath,'utf8'):fixture;
+  return {status:lookup==='wsb'?0:1,stdout:lookup==='wsb'?discovered+'\\n':'',stderr:''};
+ }
  return command===fixture?sync(process.execPath,[fixture,...args],options):sync(command,args,options);
 };
 const spawn=cp.spawn;cp.spawn=function(command,args=[],options){
@@ -1633,6 +1638,47 @@ require('node:module').syncBuiltinESMExports();`);
         }
     });
 
+    it.skipIf(process.platform === "win32")("keeps an actual foreground recovery spawn error retryable after repairing its executable", { timeout: TIMEOUT }, async () => {
+        const deviceId = "session-native-spawn-retry";
+        await client.callTool({ name: "create_windows_sandbox", arguments: { name: "Native spawn retry", deviceId } });
+        await client.callTool({ name: "start", arguments: { waitForBoot: false, deviceId, minimized: false } });
+        await waitForLog(logPath, /wsb connect --id [0-9a-f-]{36}/);
+        const nativePath = join(homeDir, "fake-windows-native-wsb");
+        const executable = join(binDir, "native-wsb");
+        try {
+            const statePath = windowsStatePath();
+            const state = JSON.parse(readFileSync(statePath, "utf8"));
+            state.devices.find((device: { id: string }) => device.id === deviceId).helperSessionLaunch = { ok: false };
+            writeFileSync(statePath, JSON.stringify(state));
+            // This path is discoverable and executable, but the operating system
+            // cannot start its missing interpreter. No spawn mock throws here.
+            writeFileSync(executable, `#!${join(homeDir, "missing-interpreter")}\n`);
+            chmodSync(executable, 0o755);
+            writeFileSync(nativePath, executable);
+            const before = await waitForStableLog(logPath);
+            const failed = await client.callTool({ name: "exec", arguments: { deviceId, command: "whoami", timeoutMs: 350 } });
+            expect(failed.isError).toBe(true);
+            expect((failed.content as Array<{ text: string }>)[0].text).toContain("session-connect-launcher-failed");
+            expect(JSON.parse(readFileSync(statePath, "utf8"))).toEqual(state);
+            expect(readFileSync(logPath, "utf8").slice(before.length)).not.toContain("wsb connect");
+            // A normal follow-up RPC also proves the asynchronous child error
+            // did not crash the MCP process.
+            expect((await client.callTool({ name: "devices", arguments: { view: "owned", backend: "windows-sandbox" } })).isError).not.toBe(true);
+
+            const quote = (value: string) => "'" + value.replace(/'/g, "'\\''") + "'";
+            writeFileSync(executable, `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(join(binDir, "wsb"))} "$@"\n`);
+            const retried = await client.callTool({ name: "cursor_position", arguments: { deviceId, timeoutMs: 350 } });
+            expect(retried.isError).toBe(true);
+            expect(JSON.parse((retried.content as Array<{ text: string }>)[0].text)).toMatchObject({ error: "windows-sandbox-helper-timeout" });
+            const after = await waitForStableLog(logPath);
+            expect((after.slice(before.length).match(/wsb connect --id/g) || []).length).toBe(1);
+            expect(JSON.parse(readFileSync(statePath, "utf8")).devices.find((device: { id: string }) => device.id === deviceId).helperSessionLaunch).toMatchObject({ ok: true, pid: expect.any(Number) });
+        } finally {
+            rmSync(nativePath, { force: true });
+            await client.callTool({ name: "stop", arguments: { deviceId } });
+        }
+    });
+
     it("preserves a successor when recovery connection publication loses its captured record", { timeout: TIMEOUT }, async () => {
         const deviceId = "session-recovery-conflict";
         await client.callTool({ name: "create_windows_sandbox", arguments: { name: "Session recovery conflict", deviceId } });
@@ -2052,6 +2098,15 @@ describe("Sandbox background launch and helper deadlines", () => {
         expect(launchWindowsSandboxSession("wsb.exe", device.sandboxId, false, 250, hooks).ok).toBe(true);
         expect(spawnSession).toHaveBeenCalledWith("wsb.exe", ["connect", "--id", device.sandboxId], expect.objectContaining({ windowsHide: false }));
         expect(unref).toHaveBeenCalledOnce();
+    });
+    it.each([undefined, 0, -1, Number.NaN, Number.MAX_SAFE_INTEGER + 1])("rejects a foreground recovery spawn without a valid PID (%s)", pid => {
+        const child = new ChildProcess();
+        Object.defineProperty(child, "pid", { value: pid });
+        const result = launchWindowsSandboxSession("wsb.exe", device.sandboxId, false, 250, {
+            platform: "win32", spawnSession: () => child,
+        });
+        expect(result).toMatchObject({ ok: false, error: "session-connect-launcher-failed" });
+        expect(() => child.emit("error", Object.assign(new Error("spawn failed"), { code: "ENOENT" }))).not.toThrow();
     });
     it("spends at most 75 percent of a short bootstrap budget without a one-second retry floor", async () => {
         let clock = 0;
