@@ -136,17 +136,26 @@ for component in root.strip('/').split('/'):
     os.close(fd)
     fd = child
 root_stat = os.fstat(fd)
-root_members = sorted(os.listdir(fd))
 def signature(s):
-    return (s.st_dev, s.st_ino, s.st_mode, s.st_uid, s.st_gid, s.st_nlink)
-entries, directories = [], []
-def visit(parent, name):
-    pinned = os.open(name, os.O_PATH | os.O_NOFOLLOW, dir_fd=parent)
+    # A live runtime may add/remove subdirectories without replacing this inode.
+    links = s.st_nlink if not stat.S_ISDIR(s.st_mode) else None
+    return (s.st_dev, s.st_ino, s.st_mode, s.st_uid, s.st_gid, links)
+def private_mode(s):
+    return (stat.S_IMODE(s.st_mode) & ~0o077) | (0o700 if stat.S_ISDIR(s.st_mode) else 0o600)
+entries, directories, repairs = [], [], []
+expected = {}
+def visit(parent, name, ancestors=()):
+    try:
+        pinned = os.open(name, os.O_PATH | os.O_NOFOLLOW, dir_fd=parent)
+    except FileNotFoundError:
+        return
     s = os.fstat(pinned)
-    if stat.S_ISLNK(s.st_mode):
+    if stat.S_ISLNK(s.st_mode) or s.st_nlink == 0:
         os.close(pinned)
         return
-    entries.append((pinned, parent, name, s))
+    entry = (pinned, parent, name, s)
+    entries.append(entry)
+    expected[pinned] = signature(s)
     # Native admission verified the Windows owner and observed same-bind users on the captured runtime.
     # CCC root setup helpers can create root-owned files on this same bind.
     if s.st_dev != root_stat.st_dev or s.st_uid not in (0, root_stat.st_uid, uid) or s.st_gid not in (0, root_stat.st_gid, gid):
@@ -157,11 +166,28 @@ def visit(parent, name):
         raise RuntimeError('Set-ID entry in Codex private state')
     if not stat.S_ISDIR(s.st_mode) and s.st_nlink != 1:
         raise RuntimeError('Multiply linked Codex private state entry')
+    if (s.st_uid, s.st_gid, stat.S_IMODE(s.st_mode)) != (uid, gid, private_mode(s)):
+        repairs.append((entry, ancestors))
     if stat.S_ISDIR(s.st_mode):
         readable = os.open('.', flags, dir_fd=pinned)
-        names = sorted(os.listdir(readable))
-        directories.append((readable, names))
-        for child in names: visit(readable, child)
+        directories.append(readable)
+        for child in sorted(os.listdir(readable)):
+            visit(readable, child, ancestors + (entry,))
+def validate(entry):
+    pinned, parent, name, _ = entry
+    try:
+        observed = os.stat(name, dir_fd=parent, follow_symlinks=False)
+    except FileNotFoundError:
+        return False
+    if signature(observed) != expected[pinned] or signature(os.fstat(pinned)) != expected[pinned]:
+        raise RuntimeError('Codex private state identity changed before repair')
+    return True
+def validate_root():
+    if signature(os.stat(root, follow_symlinks=False)) != signature(root_stat) or signature(os.fstat(fd)) != signature(root_stat):
+        raise RuntimeError('Codex state root changed during private state repair')
+def present(entry, ancestors):
+    validate_root()
+    return all(validate(ancestor) for ancestor in ancestors) and validate(entry)
 try:
     names = ('app-server-control', 'app-server-daemon', 'tmp', 'sessions', 'archived_sessions', 'log', 'logs', 'shell_snapshots', 'sqlite', 'memories')
     with open('/proc/self/mountinfo') as mountinfo:
@@ -175,47 +201,42 @@ try:
         visit(fd, name)
     # Codex chmods installation_id and other root state files during startup.
     # Group write permission cannot authorize chmod by a different owner.
-    for name in root_members:
-        if stat.S_ISREG(os.stat(name, dir_fd=fd, follow_symlinks=False).st_mode):
+    for name in sorted(os.listdir(fd)):
+        try:
+            s = os.stat(name, dir_fd=fd, follow_symlinks=False)
+        except FileNotFoundError:
+            continue
+        if stat.S_ISREG(s.st_mode):
             visit(fd, name)
-    for directory, names in directories:
-        if sorted(os.listdir(directory)) != names:
-            raise RuntimeError('Codex private state changed before repair')
-    if sorted(os.listdir(fd)) != root_members:
-        raise RuntimeError('Codex state root membership changed before repair')
-    for pinned, parent, name, s in entries:
-        if signature(os.stat(name, dir_fd=parent, follow_symlinks=False)) != signature(s):
-            raise RuntimeError('Codex private state identity changed before repair')
+    # Same-user peers may rotate logs/sockets. Validate only selected repairs and
+    # their pinned ancestry; unrelated membership is not ownership evidence.
+    repairs = [(entry, ancestors) for entry, ancestors in repairs if present(entry, ancestors)]
     libc = ctypes.CDLL(None, use_errno=True)
     libc.fchownat.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_uint, ctypes.c_uint, ctypes.c_int]
-    for pinned, parent, name, s in entries:
-        if signature(os.fstat(pinned)) != signature(s) or signature(os.stat(name, dir_fd=parent, follow_symlinks=False)) != signature(s):
-            raise RuntimeError('Codex private state changed during repair')
+    for entry, ancestors in repairs:
+        if not present(entry, ancestors):
+            continue
+        pinned, _, _, s = entry
         if (s.st_uid, s.st_gid) != (uid, gid) and libc.fchownat(pinned, b'', uid, gid, 0x1000 | 0x100):
             error = ctypes.get_errno()
             raise OSError(error, os.strerror(error))
-        # Private state remains private after the previous group access repair.
-        mode = (stat.S_IMODE(s.st_mode) & ~0o077) | (0o700 if stat.S_ISDIR(s.st_mode) else 0o600)
-        os.chmod('/proc/self/fd/' + str(pinned), mode)
+        mode = private_mode(s)
+        if stat.S_IMODE(s.st_mode) != mode:
+            os.chmod('/proc/self/fd/' + str(pinned), mode)
         after = os.fstat(pinned)
         if (after.st_uid, after.st_gid, stat.S_IMODE(after.st_mode)) != (uid, gid, mode):
             raise RuntimeError('Codex private state ownership repair did not persist')
-    for directory, names in directories:
-        if sorted(os.listdir(directory)) != names:
-            raise RuntimeError('Codex private state membership changed during repair')
-    for pinned, parent, name, s in entries:
-        after = os.stat(name, dir_fd=parent, follow_symlinks=False)
-        if signature(after) != signature(os.fstat(pinned)) or (after.st_dev, after.st_ino, after.st_uid, after.st_gid) != (s.st_dev, s.st_ino, uid, gid):
-            raise RuntimeError('Codex private state identity changed after repair')
-    if signature(os.stat(root, follow_symlinks=False)) != signature(root_stat):
-        raise RuntimeError('Codex state root changed during private state repair')
-    if sorted(os.listdir(fd)) != root_members:
-        raise RuntimeError('Codex state root membership changed during repair')
-    os.fchown(fd, uid, gid)
-    os.fchmod(fd, 0o700)
+        expected[pinned] = signature(after)
+    for entry, ancestors in repairs:
+        present(entry, ancestors)
+    validate_root()
+    if (root_stat.st_uid, root_stat.st_gid) != (uid, gid):
+        os.fchown(fd, uid, gid)
+    if stat.S_IMODE(root_stat.st_mode) != 0o700:
+        os.fchmod(fd, 0o700)
 finally:
     for pinned, *_ in entries: os.close(pinned)
-    for directory, _ in directories: os.close(directory)
+    for directory in directories: os.close(directory)
     os.close(fd)
 `;
 

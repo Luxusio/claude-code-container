@@ -107,3 +107,80 @@ describe.skipIf(!available)("executable Codex private state repair", () => {
         expect(result.status).toBe(0);
     });
 });
+
+const liveRepairFilesystem = String.raw`
+import ctypes, os, shutil, stat, sys, tempfile
+scenario = sys.argv[1]
+state = tempfile.mkdtemp(prefix='ccc-codex-private-repair-')
+os.mkdir(state + '/tmp', 0o700)
+with open(state + '/config.toml', 'w') as file: file.write('keep configuration')
+os.chmod(state + '/config.toml', 0o644)
+with open(state + '/tmp/stable', 'w') as file: file.write('running session')
+os.chmod(state + '/tmp/stable', 0o600)
+if scenario == 'parent-replaced':
+    with open(state + '/tmp/repair', 'w') as file: file.write('original')
+    os.chmod(state + '/tmp/repair', 0o644)
+sys.argv = ['repair', str(os.getuid()), str(os.getgid())]
+real_listdir, real_chmod, real_cdll = os.listdir, os.chmod, ctypes.CDLL
+writes = []
+def chmod(path, mode, **options):
+    writes.append(os.path.realpath(path))
+    return real_chmod(path, mode, **options)
+os.chmod = chmod
+changed = False
+def listdir(path):
+    global changed
+    names = real_listdir(path)
+    if scenario.startswith('runtime-') and isinstance(path, int) and os.path.realpath('/proc/self/fd/' + str(path)) == state + '/tmp' and not changed:
+        changed = True
+        # Rotate a file after enumeration, as another same-user Codex session does.
+        if scenario == 'runtime-removed': os.unlink(state + '/tmp/stable')
+        with open(state + '/tmp/rotated', 'w') as file: file.write('new runtime state')
+        real_chmod(state + '/tmp/rotated', 0o600)
+    return names
+os.listdir = listdir
+def cdll(*args, **options):
+    if scenario == 'parent-replaced':
+        os.rename(state + '/tmp', state + '/original-tmp')
+        os.mkdir(state + '/tmp', 0o700)
+        with open(state + '/tmp/repair', 'w') as file: file.write('replacement')
+        real_chmod(state + '/tmp/repair', 0o644)
+    if scenario == 'selected-replaced':
+        os.rename(state + '/config.toml', state + '/original-config')
+        with open(state + '/config.toml', 'w') as file: file.write('replacement')
+        real_chmod(state + '/config.toml', 0o644)
+    return real_cdll(*args, **options)
+ctypes.CDLL = cdll
+`;
+
+describe.skipIf(!available || process.platform !== "linux")("Codex private repair with live runtime state", () => {
+    it.each(["runtime-churn", "runtime-removed", "selected-replaced", "parent-replaced"])("handles %s without rewriting unrelated state", scenario => {
+        const production = CODEX_PRIVATE_STATE_GRANT.replace("root = '/home/ccc/.codex'", "root = state");
+        const assertion = String.raw`
+except RuntimeError as error:
+    assert scenario in ('selected-replaced', 'parent-replaced'), str(error)
+    assert 'identity changed' in str(error), str(error)
+    assert writes == [], writes
+    assert stat.S_IMODE(os.stat(state + '/config.toml').st_mode) == 0o644
+    if scenario == 'selected-replaced':
+        assert open(state + '/config.toml').read() == 'replacement'
+        assert stat.S_IMODE(os.stat(state + '/original-config').st_mode) == 0o644
+    else:
+        assert open(state + '/tmp/repair').read() == 'replacement'
+        assert stat.S_IMODE(os.stat(state + '/original-tmp/repair').st_mode) == 0o644
+else:
+    assert scenario.startswith('runtime-')
+    assert changed
+    assert writes == [state + '/config.toml'], writes
+    assert open(state + '/config.toml').read() == 'keep configuration'
+    assert stat.S_IMODE(os.stat(state + '/config.toml').st_mode) == 0o600
+    assert open(state + '/tmp/rotated').read() == 'new runtime state'
+finally:
+    shutil.rmtree(state)
+`;
+        const script = liveRepairFilesystem + "\ntry:\n" + production.split("\n").map(line => "    " + line).join("\n") + assertion;
+        const result = spawnSync(python!, ["-I", "-", scenario], { input: script, encoding: "utf8", windowsHide: true, timeout: 5000 });
+        expect(result.stderr).toBe("");
+        expect(result.status).toBe(0);
+    });
+});
