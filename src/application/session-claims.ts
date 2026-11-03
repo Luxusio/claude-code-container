@@ -343,17 +343,42 @@ export function createSessionClaims(ports: SessionClaimsPorts) {
         native.retireClaim(receipt);
     }
 
-    function retainedAdmission(prefix: string, claims: ObservedClaim[], scope?: SessionClaimRecoveryScope): RestrictedSessionAdmission | null {
-        if (!claims.some(item => item.snapshot && item.snapshot.observation.pending !== null
-            && !currentSessionClaimAuthority(item.snapshot.observation))) return null;
+    function pendingRetentionAnchor(claims: ObservedClaim[]): boolean {
+        return claims.some(item => item.parent === "stale" && item.guardian === "stale"
+            && item.snapshot && item.snapshot.observation.pending !== null
+            && !currentSessionClaimAuthority(item.snapshot.observation));
+    }
+
+    function passiveRetentionAnchor(claims: ObservedClaim[], own?: ObservedClaim): boolean {
+        const obligations = claims.filter(item => item.parent === "stale" && item.guardian === "stale")
+            .flatMap(item => {
+                const id = item.snapshot && currentSessionClaimAuthority(item.snapshot.observation)?.containerId;
+                return id ? [id] : [];
+            });
+        return [...claims, ...(own ? [own] : [])].some(item => {
+            const observation = item.snapshot?.observation;
+            const ack = observation?.lastAcknowledged;
+            return item.parent !== "unknown" && item.guardian !== "unknown"
+                && (item.parent === "active" || item.guardian === "active")
+                && observation?.registration === "ready" && observation.pending === null && observation.ownStarted === null
+                && ack?.generation === observation.generation && !ack.cleanupEnabled
+                && typeof ack.containerId === "string" && obligations.includes(ack.containerId);
+        });
+    }
+
+    function retainedAdmission(prefix: string, claims: ObservedClaim[], scope?: SessionClaimRecoveryScope,
+        initialOwn?: ObservedClaim): RestrictedSessionAdmission | null {
+        const pendingCandidate = claims.some(item => item.snapshot && item.snapshot.observation.pending !== null
+            && !currentSessionClaimAuthority(item.snapshot.observation));
+        if (!pendingCandidate && !passiveRetentionAnchor(claims, initialOwn)) return null;
         if (!scope?.runtimeInvocation) {
-            throw incomplete("Retained pending predecessor recovery requires a captured native runtime; the existing records were preserved.");
+            throw incomplete("Retained predecessor recovery requires a captured native runtime; the existing records were preserved.");
         }
         const native = responsibility();
         const runtime = scope.runtimeInvocation;
         const changed = () => incomplete("Retained predecessor cohort evidence changed or could not be qualified; the existing records were preserved.");
         const original = claims.map(item => ({ item, receipt: JSON.stringify(item.receipt), snapshot: JSON.stringify(item.snapshot) }));
-        let ownReceipt: SessionOwnershipReceipt | undefined;
+        let ownReceipt: SessionOwnershipReceipt | undefined = initialOwn?.receipt ? { ...initialOwn.receipt } : undefined;
 
         function qualify(item: ObservedClaim): void {
             if (!item.receipt || !item.owner || item.owner.ownershipKind !== "monitored" || !item.snapshot
@@ -364,12 +389,8 @@ export function createSessionClaims(ports: SessionClaimsPorts) {
                     && !noObligation(item.snapshot) && item.snapshot.observation.pending === null) throw changed();
         }
         for (const { item } of original) qualify(item);
-        // An unresolved request only anchors retention when both of its process
-        // generations are positively dead. Live peers remain protective peers.
-        if (!original.some(({ item }) => item.parent === "stale" && item.guardian === "stale"
-            && item.snapshot!.observation.pending !== null && !currentSessionClaimAuthority(item.snapshot!.observation))) {
-            return null;
-        }
+        if (initialOwn) qualify(initialOwn);
+        if (!pendingRetentionAnchor(claims) && !passiveRetentionAnchor(claims, initialOwn)) return null;
         const target = scope.inspectContainer();
         if (!target.known || !target.containerId || !/^[a-f0-9]{64}$/i.test(target.containerId)
             || typeof target.running !== "boolean" || target.running && target.requiresLiveVerification) {
@@ -384,11 +405,13 @@ export function createSessionClaims(ports: SessionClaimsPorts) {
         function revalidate(ownPath?: string): void {
             const fresh = observeClaims(prefix);
             let peers = fresh;
+            let own: ObservedClaim | undefined;
             if (ownPath !== undefined) {
                 if (original.some(({ item }) => item.receipt!.path === ownPath)) throw changed();
-                const own = fresh.find(item => item.receipt?.path === ownPath);
+                own = fresh.find(item => item.receipt?.path === ownPath);
                 if (!own) throw changed();
                 qualify(own);
+                if (initialOwn?.snapshot && !native.observationStore.matches(initialOwn.snapshot)) throw changed();
                 const observation = own.snapshot!.observation;
                 const ack = observation.lastAcknowledged;
                 if (own.parent !== "active" || own.guardian !== "active" || observation.registration !== "ready"
@@ -409,10 +432,13 @@ export function createSessionClaims(ports: SessionClaimsPorts) {
             })) throw changed();
             const names = getSessionLockClaimsForContainer(prefix);
             if (names.length !== fresh.length || fresh.some(item => !names.includes(item.name))) throw changed();
+            // A live passive peer protects the container but never inherits the
+            // predecessor's cleanup duty. Losing that peer invalidates admission.
+            if (!pendingRetentionAnchor(peers) && !passiveRetentionAnchor(peers, own)) throw changed();
         }
         // Inspection may re-enter native code. Reject drift immediately rather
         // than falling through to cleanup using a newly observed replacement.
-        revalidate();
+        revalidate(initialOwn?.receipt?.path);
         return { containerId, revalidate };
     }
 
@@ -424,10 +450,14 @@ export function createSessionClaims(ports: SessionClaimsPorts) {
             failures.push(incomplete(`${JSON.stringify(name.slice(0, 180))}: ${reason}`, cause));
         };
         try {
-            const claims = observeClaims(prefix).filter(item => item.receipt?.path !== ownPath);
-            const restrictedAdmission = retainedAdmission(prefix, claims, scope);
+            const observed = observeClaims(prefix);
+            const claims = observed.filter(item => item.receipt?.path !== ownPath);
+            const restrictedAdmission = retainedAdmission(prefix, claims, scope,
+                ownPath ? observed.find(item => item.receipt?.path === ownPath) : undefined);
             if (restrictedAdmission) return { claims: getSessionLockClaimsForContainer(prefix), restrictedAdmission,
-                error: incomplete("Predecessor cleanup is deferred because qualified pending monitored authority is retained; the original cohort remains unresolved and protective.") };
+                error: incomplete(pendingRetentionAnchor(claims)
+                    ? "Predecessor cleanup is deferred because qualified pending monitored authority is retained; the original cohort remains unresolved and protective."
+                    : "Predecessor cleanup is deferred while a verified session protects the same container; the original cleanup responsibility is retained.") };
             const recoverable: SessionClaimObservationSnapshot[] = [];
             const legacy: ObservedClaim[] = [];
             for (const item of claims) {

@@ -48,7 +48,7 @@ export interface SessionAcquisitionPorts {
     inspectExisting(request: SessionAcquisitionRequest): SessionAcquisitionInspection | Promise<SessionAcquisitionInspection>;
     arm(): Promise<void>;
     acknowledge(containerId: string, runtime: SessionOwnershipRuntime): Promise<void>;
-    reconcileForeign(prefix: string, lockFile: string): boolean;
+    reconcileForeign(prefix: string, lockFile: string): boolean | SessionAcquisitionRecovery;
     rollback(lockFile: string): void | Promise<void>;
 }
 

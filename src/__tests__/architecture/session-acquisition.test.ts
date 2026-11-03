@@ -400,6 +400,59 @@ describe("existing-target acquisition with retained predecessors", () => {
             expect([...f.claims]).toEqual([predecessor, own]); expect(f.trace).not.toContain("rollback");
         });
     });
+    it.each([false, true])("latches retention first discovered after the cleanup-disabled ACK (running=%s)", async running => {
+        const f = restricted();
+        f.ports.recoverPredecessors = () => { f.inGuard("recover-live-predecessor"); };
+        f.ports.inspectExisting = () => {
+            f.inGuard("inspect-late-retention");
+            return {known: true, containerId: id, runtime: "podman", running,
+                ...(!running ? {requiresLiveVerification: true as const} : {})};
+        };
+        f.ports.reconcileForeign = () => {
+            f.inGuard("reconcile-new-retention");
+            expect(f.trace).toContain("ack");
+            return {containerId: id, runtime: "podman", diagnostic: warning};
+        };
+        await expect(createSessionAcquisition(f.ports).run(request)).resolves.toEqual({
+            lockFile: own, existingId: id, existingOnly: true, recoveryWarning: warning,
+            ...(!running ? {requiresLiveVerification: true} : {}),
+        });
+        expect(f.trace.filter(event => event === "inspect-late-retention")).toHaveLength(2);
+        expect(f.trace.lastIndexOf("inspect-late-retention")).toBeGreaterThan(f.trace.indexOf("reconcile-new-retention"));
+        expect([...f.claims]).toEqual([predecessor, own]);
+        expect(f.trace).not.toContain("rollback");
+    });
+    it.each(["container", "runtime"] as const)("refuses late retention with a different acknowledged %s", async fault => {
+        const f = restricted();
+        f.ports.recoverPredecessors = () => { f.inGuard("recover-live-predecessor"); };
+        f.ports.reconcileForeign = () => ({
+            containerId: fault === "container" ? "b".repeat(64) : id,
+            runtime: fault === "runtime" ? "docker" : "podman", diagnostic: warning,
+        });
+        await expect(createSessionAcquisition(f.ports).run(request)).rejects.toThrow("same identified container");
+        expect(f.trace).toContain("ack");
+        expect(f.trace).toContain("rollback");
+        expect([...f.claims]).toEqual([predecessor]);
+    });
+    it.each(["container", "unknown", "cohort"] as const)("rolls back only its reservation when late %s proof changes", async fault => {
+        const f = restricted();
+        const changed = new Error("Captured cohort was replaced");
+        let reads = 0;
+        f.ports.recoverPredecessors = () => { f.inGuard("recover-live-predecessor"); };
+        f.ports.inspectExisting = () => {
+            f.inGuard("inspect-late-retention");
+            const final = ++reads === 2;
+            if (final && fault === "cohort") throw changed;
+            return {known: !final || fault !== "unknown", containerId: final && fault === "container" ? "b".repeat(64) : id,
+                runtime: "podman", running: true};
+        };
+        f.ports.reconcileForeign = () => ({containerId: id, runtime: "podman", diagnostic: warning});
+        await expect(createSessionAcquisition(f.ports).run(request)).rejects.toThrow(fault === "cohort" ? changed.message : "same identified container");
+        expect(reads).toBe(2);
+        expect(f.trace).toContain("ack");
+        expect(f.trace).toContain("rollback");
+        expect([...f.claims]).toEqual([predecessor]);
+    });
     it.each([false, true])("admits the same stopped target without losing its live-verification requirement (provisional=%s)", async provisional => {
         const f = restricted();
         f.ports.inspectExisting = () => {

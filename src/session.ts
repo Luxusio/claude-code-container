@@ -309,7 +309,18 @@ export async function acquireHostSessionOwnership(
                     return sessionClaims.getSessionLockClaimsForContainer(prefix).some(name => name !== basename(lockFile));
                 }
                 const report = sessionClaims.reconcileSessionClaimsInHeldLifecycleLock(prefix, lockFile, recovery);
-                if (report.error) throw report.error;
+                if (report.error) {
+                    if (!report.restrictedAdmission) throw report.error;
+                    retainedAdmission = report.restrictedAdmission;
+                    retainedOwnPath = lockFile;
+                    retainedRecovery = {
+                        containerId: retainedAdmission.containerId, runtime: runtimeInvocation.runtime,
+                        diagnostic: report.error.message.slice(0, 1536),
+                    };
+                    // Acquisition latches this restriction before its final native
+                    // inspection revalidates the captured cohort and reservation.
+                    return retainedRecovery;
+                }
                 return report.claims.some(name => name !== basename(lockFile));
             },
             async rollback() {

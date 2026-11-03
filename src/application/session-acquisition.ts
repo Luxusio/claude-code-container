@@ -15,7 +15,7 @@ export function createSessionAcquisition(ports: SessionAcquisitionPorts) {
         const prefix = sessionClaimPrefix(request.projectId, request.profile);
         return ports.withLifecycleLock(prefix, async () => {
             checkCancelled();
-            const recovery = await ports.recoverPredecessors(prefix);
+            let recovery = await ports.recoverPredecessors(prefix);
             checkCancelled();
             let requiresLiveVerification = false;
             const verifyRetainedTarget = (inspection: SessionAcquisitionInspection) => {
@@ -49,7 +49,13 @@ export function createSessionAcquisition(ports: SessionAcquisitionPorts) {
                     existingOwnershipAcknowledged = true;
                     checkCancelled();
                 }
-                ports.reconcileForeign(prefix, lockFile);
+                const reconciliation = ports.reconcileForeign(prefix, lockFile);
+                if (typeof reconciliation !== "boolean") {
+                    // A guardian may finish while this reservation is being armed.
+                    // Keep a newly retained cohort restricted to the ID already ACKed.
+                    recovery = reconciliation;
+                    verifyRetainedTarget(inspection);
+                }
                 if (recovery) {
                     const current = await ports.inspectExisting(request);
                     checkCancelled();

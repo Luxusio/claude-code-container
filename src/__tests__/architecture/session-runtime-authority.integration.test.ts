@@ -193,11 +193,13 @@ if (!mode.startsWith('recover') && mode !== 'query') {
         await runtime.runWithNativeRuntimeInvocation(runtime.getRuntimeInvocation(), prepare);
     } else await prepare();
 }
-writeFileSync(${JSON.stringify(alias)}, ${JSON.stringify(endpointB)});
-process.env.PATH = ${JSON.stringify(binB + ":" + dirname(process.execPath) + ":/usr/bin:/bin")};
-process.env.DOCKER_CONTEXT = 'redefined';
-process.env.DOCKER_HOST = ${JSON.stringify(endpointB)};
-process.env.DOCKER_CONFIG = ${JSON.stringify(join(root, "config-b"))};
+if (mode !== 'recover-late') {
+    writeFileSync(${JSON.stringify(alias)}, ${JSON.stringify(endpointB)});
+    process.env.PATH = ${JSON.stringify(binB + ":" + dirname(process.execPath) + ":/usr/bin:/bin")};
+    process.env.DOCKER_CONTEXT = 'redefined';
+    process.env.DOCKER_HOST = ${JSON.stringify(endpointB)};
+    process.env.DOCKER_CONFIG = ${JSON.stringify(join(root, "config-b"))};
+}
 runtime.setRuntimeOverride('docker');
 // Both guardian launch and signal registration occur after the native scope
 // returned, with ambient PATH, alias and configuration selecting engine B.
@@ -210,11 +212,36 @@ if (mode === 'query') {
 if (mode.startsWith('recover')) {
     process.send({event: 'recovering'});
     try {
+        let predecessorEnded = false;
         const acquired = await acquireHostSessionOwnership({projectId: prefix, projectPath: project}, () => {
             process.send({event: 'inspecting', claims: readdirSync(${JSON.stringify(join(home, ".ccc", "run", "locks"))}).filter(name => name.endsWith('.lock'))});
             if (mode === 'recover-fail') throw new Error('Owned fixture failed join');
-            return {known: true, containerId: mode === 'recover-join' ? ${JSON.stringify(exactId)} : null, runtime: 'docker'};
+            if (mode === 'recover-late' && !predecessorEnded) {
+                const previous = JSON.parse(readFileSync(${JSON.stringify(join(root, "late-predecessor.json"))}, 'utf8'));
+                const birth = pid => {
+                    try {
+                        const raw = readFileSync('/proc/' + pid + '/stat', 'utf8');
+                        const fields = raw.slice(raw.lastIndexOf(')') + 1).trim().split(/\\s+/);
+                        return fields[0] === 'Z' || fields[0] === 'X' ? null : fields[19];
+                    } catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+                };
+                if (birth(previous.parent) !== previous.parentToken || birth(previous.guardian) !== previous.guardianToken) {
+                    throw new Error('Owned predecessor process identities changed');
+                }
+                process.kill(previous.parent, 'SIGSTOP');
+                process.kill(previous.guardian, 'SIGKILL');
+                process.kill(previous.parent, 'SIGKILL');
+                const deadline = Date.now() + 5000;
+                while (birth(previous.parent) || birth(previous.guardian)) {
+                    if (Date.now() > deadline) throw new Error('Owned predecessor did not exit');
+                    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+                }
+                predecessorEnded = true;
+            }
+            return {known: true, containerId: mode === 'recover-join' || mode === 'recover-late' ? ${JSON.stringify(exactId)} : null, runtime: 'docker',
+                ...(mode === 'recover-late' ? {running: true} : {})};
         });
+        if (mode === 'recover-late') process.send({event: 'acquired', acquired});
         lock = acquired.lockFile;
         const children = readFileSync('/proc/' + process.pid + '/task/' + process.pid + '/children', 'utf8').trim().split(/\\s+/).filter(Boolean).map(Number);
         if (children.length !== 1) throw new Error('Expected one owned guardian');
@@ -465,6 +492,40 @@ process.on('message', async message => {
         owner.child.send({event: "eof"});
         await eventually(() => !existsSync(String(ready.lock)), "held-acquisition no-obligation rollback");
         await eventually(() => token(Number(ready.guardian)) === undefined, "held-acquisition guardian exit");
+        expect(stops()).toEqual([]);
+    });
+
+    it("actual acquisition retains a predecessor that dies after reservation without stopping its joined container", async () => {
+        const previousOwner = launch("host");
+        const previous = await frame(previousOwner, "ready");
+        const claim = String(previous.lock);
+        const paths = [claim, claim + ".guardian.json", claim + ".runtime.json"];
+        const before = paths.map(path => readFileSync(path));
+        const parent = previousOwner.child.pid!, guardian = Number(previous.guardian);
+        const parentToken = token(parent), guardianToken = token(guardian);
+        expect(parentToken).toBeTypeOf("string");
+        expect(guardianToken).toBeTypeOf("string");
+        writeFileSync(join(root, "late-predecessor.json"), JSON.stringify({parent, guardian, parentToken, guardianToken}));
+        writeFileSync(alias, endpointA);
+
+        const successor = launch("recover-late");
+        await eventually(() => successor.messages.some(message => message.event === "acquired" || message.event === "acquisition-failed"), "late acquisition outcome");
+        const failure = successor.messages.find(message => message.event === "acquisition-failed");
+        expect(failure, successor.output).toBeUndefined();
+        const result = successor.messages.find(message => message.event === "acquired")!.acquired;
+        expect(result).toMatchObject({existingId: exactId, existingOnly: true});
+        const ready = await frame(successor, "ready");
+        const observation = JSON.parse(readFileSync(String(ready.lock) + ".guardian.json", "utf8"));
+        expect(observation.lastAcknowledged).toMatchObject({containerId: exactId, cleanupEnabled: false});
+        expect(paths.map(path => readFileSync(path))).toEqual(before);
+        expect(stops()).toEqual([]);
+        expect(engineState()[endpointA]![exactId]).toBe(true);
+        expect(engineState()[endpointB]![exactId]).toBe(true);
+
+        successor.child.send({event: "eof"});
+        await eventually(() => !existsSync(String(ready.lock)), "late acquisition's no-obligation retirement");
+        await eventually(() => token(Number(ready.guardian)) === undefined, "late acquisition guardian exit");
+        expect(paths.map(path => readFileSync(path))).toEqual(before);
         expect(stops()).toEqual([]);
     });
 

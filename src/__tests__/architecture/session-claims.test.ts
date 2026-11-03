@@ -895,3 +895,92 @@ describe("retained pending cohort admission", () => {
         expect(effects).toEqual(["cleanup", "devices", "stop"]); expect(f.names).toEqual([old]); expect(f.removals).toEqual([]);
     });
 });
+
+describe("retained cleanup responsibility beside a live passive session", () => {
+    function passivePair(own = false) {
+        const peerName = own ? current : other;
+        const peerPid = own ? 42 : 8;
+        const f = fixture([old, peerName], {[old]: monitored(7), [peerName]: monitored(peerPid)});
+        const predecessor = f.attach(old);
+        const peer = f.attach(peerName, {
+            lastAcknowledged: {generation, sequence: 1, containerId: fullId, cleanupEnabled: false},
+        });
+        f.dead(7); f.dead(predecessor.observation.guardian.pid);
+        f.alive(peerPid, "owner-start"); f.alive(peer.observation.guardian.pid, "guardian-start");
+        const scope: SessionClaimRecoveryScope = {
+            runtimeInvocation: invocation(), inspectContainer: () => ({known: true, containerId: fullId, running: true}),
+            stopContainer: () => { throw new Error("retention cannot authorize a stop"); },
+        };
+        const effects = policyCleanup(f);
+        return {f, predecessor, peer, peerName, scope, effects};
+    }
+
+    it.each([true, false])("retains the actual peer-veto obligation for the same verified target (running=%s)", running => {
+        const {f, predecessor, scope, effects} = passivePair();
+        // Reproduce the reported policy failure without substituting a successful cleanup.
+        expect(() => f.inGuard(() => f.ports.responsibility!.cleanup(predecessor))).toThrow(/blocked and no qualified successor/);
+        expect(effects).toEqual(["cleanup"]);
+        effects.length = 0;
+        scope.inspectContainer = () => ({known: true, containerId: fullId, running});
+        const before = JSON.stringify([...f.snapshots]);
+        const result = f.inGuard(() => f.app.reconcileSessionClaimsInHeldLifecycleLock("project", undefined, scope));
+        expect(result.error?.message).toContain("verified session protects the same container");
+        expect(result.error?.message).not.toContain("pending monitored authority");
+        expect(result.restrictedAdmission?.containerId).toBe(fullId);
+        f.inGuard(() => result.restrictedAdmission!.revalidate());
+        expect(JSON.stringify([...f.snapshots])).toBe(before);
+        expect(effects).toEqual([]); expect(f.removals).toEqual([]); expect(f.names).toEqual([old, other]);
+    });
+
+    it("uses an acknowledged current reservation as the passive peer without adding it to the old cohort", () => {
+        const {f, scope, effects} = passivePair(true);
+        const ownPath = `/claims/${current}`;
+        const before = JSON.stringify([...f.snapshots]);
+        const result = f.inGuard(() => f.app.reconcileSessionClaimsInHeldLifecycleLock("project", ownPath, scope));
+        expect(result.restrictedAdmission?.containerId).toBe(fullId);
+        f.inGuard(() => result.restrictedAdmission!.revalidate(ownPath));
+        expect(JSON.stringify([...f.snapshots])).toBe(before);
+        expect(effects).toEqual([]); expect(f.removals).toEqual([]);
+        const own = f.snapshots.get(current)!;
+        f.snapshots.set(current, {...own, observationReceipt: {...own.observationReceipt, inode: "9001"}});
+        expect(() => f.inGuard(() => result.restrictedAdmission!.revalidate(ownPath))).toThrow(/evidence changed/);
+    });
+
+    it("rejects a lost passive peer and lets a later all-dead recovery settle the original duty", () => {
+        const {f, peer, scope, effects} = passivePair();
+        const result = f.inGuard(() => f.app.reconcileSessionClaimsInHeldLifecycleLock("project", undefined, scope));
+        expect(result.restrictedAdmission).toBeDefined();
+        f.dead(peer.receipt.ownerPid); f.dead(peer.observation.guardian.pid);
+        expect(() => f.inGuard(() => result.restrictedAdmission!.revalidate())).toThrow(/evidence changed/);
+        expect(effects).toEqual([]); expect(f.removals).toEqual([]);
+        expect(f.recover(scope)).toEqual([]);
+        expect(effects).toEqual(["cleanup", "devices", "stop"]);
+        expect(f.removals).toEqual([`/claims/${other}`, `/claims/${old}`]);
+    });
+
+    it("does not retain an unrelated passive container instead of completing the exact old cleanup", () => {
+        const {f, scope, effects} = passivePair();
+        f.attach(other, {lastAcknowledged: {generation, sequence: 1, containerId: differentId, cleanupEnabled: false}});
+        const result = f.inGuard(() => f.app.reconcileSessionClaimsInHeldLifecycleLock("project", undefined, scope));
+        expect(result.restrictedAdmission).toBeUndefined(); expect(result.error).toBeUndefined();
+        expect(effects).toEqual(["cleanup", "stop"]);
+        expect(f.removals).toEqual([`/claims/${old}`]); expect(f.names).toEqual([other]);
+    });
+
+    it.each(["runtime", "executable", "unknown-parent", "unknown-guardian", "missing-evidence", "target", "missing-runtime"] as const)(
+        "never admits a passive cohort with %s uncertainty", fault => {
+            const {f, scope, effects} = passivePair();
+            if (fault === "runtime") f.attach(other, {lastAcknowledged: {generation, sequence: 1, containerId: fullId, cleanupEnabled: false}}, invocation("unix:///other.sock"));
+            if (fault === "executable") f.attach(other, {lastAcknowledged: {generation, sequence: 1, containerId: fullId, cleanupEnabled: false}}, {...invocation(), executable: "/other/docker"});
+            if (fault === "unknown-parent") f.observations.set(8, {status: "unknown"});
+            if (fault === "unknown-guardian") f.observations.set(108, {status: "unknown"});
+            if (fault === "missing-evidence") f.snapshots.delete(other);
+            if (fault === "target") scope.inspectContainer = () => ({known: true, containerId: differentId, running: true});
+            const selected = fault === "missing-runtime" ? {inspectContainer: scope.inspectContainer, stopContainer: scope.stopContainer} : scope;
+            const result = f.inGuard(() => f.app.reconcileSessionClaimsInHeldLifecycleLock("project", undefined, selected));
+            expect(result.restrictedAdmission).toBeUndefined(); expect(result.error).toBeInstanceOf(Error);
+            expect(effects).not.toContain("devices"); expect(effects).not.toContain("stop");
+            expect(f.removals).toEqual([]); expect(f.names).toEqual([old, other]);
+        },
+    );
+});
