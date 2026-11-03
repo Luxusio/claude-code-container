@@ -2,7 +2,7 @@ import Ajv from "ajv";
 import { toolInputError } from "../../device-lab-mcp/src/tool-arguments.mjs";
 import { backendProviderEnumDiagnostics, missingWindowsImageProbe, probeMissingMacosImage } from "../../scripts/real-tests/level2-broker-e2e.ts";
 import { spawn, spawnSync } from "child_process";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { basename, dirname, join } from "path";
 import { pathToFileURL } from "url";
@@ -24,6 +24,8 @@ import {
     runResourceAware,
 } from "../../scripts/real-tests/provider-parallelism.ts";
 import { repoRoot } from "./helpers/device-lab-mcp-fixture.js";
+import { deviceLabTestHomeEnvironment } from "./helpers/device-lab-test-environment.js";
+import { withExclusiveRealProviderRun } from "../../scripts/real-tests/exclusive-real-provider-run.ts";
 
 const runner = join(repoRoot, "scripts", "test-level.js");
 const repoLoader = pathToFileURL(join(repoRoot, "scripts", "real-tests", "typescript-source-loader.mjs")).href;
@@ -704,6 +706,7 @@ describe("test level runner", () => {
         expect(plan.level).toBe(0);
         expect(plan.env.CCC_TEST_LEVEL).toBe("0");
         expect(plan.args).toEqual(expect.arrayContaining(["run"]));
+        expect(plan.args[0]).toBe(join(repoRoot, "scripts", "run-vitest.mjs"));
         expect(plan.args).not.toEqual(expect.arrayContaining(["src/__tests__/device-lab.real-provider-readiness.test.ts"]));
     });
 
@@ -711,6 +714,8 @@ describe("test level runner", () => {
         const level1 = dryRun("level1");
         const level2 = dryRun("2");
         const level3 = dryRun("3");
+
+        for (const plan of [level1, level2, level3]) expect(plan.args[0]).toBe(join(repoRoot, "scripts", "run-vitest.mjs"));
 
         expect(level1.args).toEqual(expect.arrayContaining(["src/__tests__/device-lab.real-provider-readiness.test.ts"]));
         expect(level1.args).toEqual(expect.arrayContaining(["--reporter", "verbose"]));
@@ -727,6 +732,77 @@ describe("test level runner", () => {
             "src/__tests__/device-lab.real-destructive.test.ts",
         ]));
     });
+
+    it("guarded Vitest waits for real-provider admission and holds it until the failing child finishes", async () => {
+        const root = realpathSync(mkdtempSync(join(tmpdir(), "ccc-vitest-admission-")));
+        const ready = join(root, "ready");
+        const release = join(root, "release");
+        const config = join(root, "vitest.config.mjs");
+        const outcome = join(root, "outcome.json");
+        symlinkSync(join(repoRoot, "node_modules"), join(root, "node_modules"), "junction");
+        writeFileSync(config, `export default { root: ${JSON.stringify(root)}, test: { include: ['fixture.test.mjs'], globals: true, maxWorkers: 1, testTimeout: 30000 } };`);
+        writeFileSync(outcome, JSON.stringify({ fail: true }));
+        writeFileSync(join(root, "fixture.test.mjs"), `
+            import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+            import { setTimeout as delay } from 'node:timers/promises';
+            test('admitted child', async () => {
+                writeFileSync(${JSON.stringify(ready)}, 'ready');
+                while (!existsSync(${JSON.stringify(release)})) await delay(10);
+                expect(JSON.parse(readFileSync(${JSON.stringify(outcome)}, 'utf8')).fail).toBe(false);
+            });
+        `);
+        let child: ReturnType<typeof spawn> | undefined;
+        let completion: Promise<{ code: number | null; output: string }> | undefined;
+        const start = () => {
+            child = spawn(process.execPath, [join(repoRoot, "scripts", "run-vitest.mjs"), "run", "--config", config, "--no-cache"], {
+                cwd: repoRoot,
+                env: { ...process.env, ...deviceLabTestHomeEnvironment(root), CCC_TEST_LEVEL: "3", CCC_E2E_SKIP_BUILD: "1" },
+                stdio: ["ignore", "pipe", "pipe"], windowsHide: true,
+            });
+            const running = child;
+            completion = new Promise((resolve, reject) => {
+                let output = "";
+                running.stdout?.on("data", value => { output += value; });
+                running.stderr?.on("data", value => { output += value; });
+                running.once("error", reject);
+                running.once("close", code => resolve({ code, output }));
+            });
+            return completion;
+        };
+        try {
+            await withExclusiveRealProviderRun("fixture competitor", async () => {
+                const queryEnv = { ...process.env, ...deviceLabTestHomeEnvironment(root), CCC_TEST_LEVEL: "3" };
+                delete queryEnv.CCC_E2E_SKIP_BUILD;
+                const listed = spawnSync(process.execPath, [join(repoRoot, "scripts", "run-vitest.mjs"), "list", "--filesOnly", "--json", "--config", config], {
+                    cwd: repoRoot, env: queryEnv,
+                    encoding: "utf8", windowsHide: true, timeout: 10000,
+                });
+                expect(listed.status, listed.stderr).toBe(0);
+                expect(listed.stdout).toContain("fixture.test.mjs");
+                start();
+                await new Promise(resolve => setTimeout(resolve, 400));
+                expect(existsSync(ready)).toBe(false);
+                expect(child!.exitCode).toBeNull();
+            }, { home: root });
+            const deadline = Date.now() + 20000;
+            while (!existsSync(ready) && Date.now() < deadline && child!.exitCode === null) await new Promise(resolve => setTimeout(resolve, 20));
+            expect(existsSync(ready), child!.exitCode === null ? "child did not reach its test" : (await completion!)?.output).toBe(true);
+            let competitorRan = false;
+            await expect(withExclusiveRealProviderRun("late competitor", () => { competitorRan = true; }, { home: root, waitMs: 30 }))
+                .rejects.toMatchObject({ code: "real-provider-test-lock-unavailable" });
+            expect(competitorRan).toBe(false);
+            writeFileSync(release, "release");
+            const failed = await completion!;
+            expect(failed.code, failed.output).toBe(1);
+            writeFileSync(outcome, JSON.stringify({ fail: false }));
+            const subsequent = await start();
+            expect(subsequent.code, subsequent.output).toBe(0);
+        } finally {
+            if (child && child.exitCode === null) child.kill("SIGTERM");
+            await completion?.catch(() => {});
+            rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+        }
+    }, 60000);
 
     it("prints usage for invalid levels without running vitest", () => {
         const result = spawnSync(process.execPath, [runner, "9"], {

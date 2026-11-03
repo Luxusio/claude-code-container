@@ -119,7 +119,7 @@ function commandFor(level, options = {}) {
         mode,
         command: process.execPath,
         args: mode === "vitest"
-            ? [vitest, "run", ...(level > 0 ? ["--reporter", "verbose"] : []), ...config.files]
+            ? [join(root, "scripts", "run-vitest.mjs"), "run", ...(level > 0 ? ["--reporter", "verbose"] : []), ...config.files]
             : [
                 "--import",
                 sourceLoader,

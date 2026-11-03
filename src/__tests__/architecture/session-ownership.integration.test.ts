@@ -604,7 +604,7 @@ process.on('message', async (message) => {
         }
         owners.length = 0;
         guardians.clear();
-        rmSync(root, { recursive: true, force: true });
+        rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     });
 
     // The owned fake runtime uses a POSIX executable, like the existing shutdown cases.

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from "child_process";
 import { dirname, join } from "path";
-import { fileURLToPath } from "url";
+import { fileURLToPath, pathToFileURL } from "url";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const vitest = join(repoRoot, "node_modules", "vitest", "vitest.mjs");
@@ -37,20 +37,45 @@ function buildBeforeRun(env) {
     return { ...env, CCC_E2E_SKIP_BUILD: "1" };
 }
 
-const child = spawn(process.execPath, [vitest, ...vitestArgs], {
-    cwd: repoRoot,
-    env: buildBeforeRun(hiddenChildProcessEnv()),
-    stdio: "inherit",
-    windowsHide: true,
-});
-
-for (const signal of ["SIGINT", "SIGTERM"]) {
-    process.once(signal, () => child.kill(signal));
+function runVitest(env) {
+    return new Promise((resolve) => {
+        const child = spawn(process.execPath, [vitest, ...vitestArgs], {
+            cwd: repoRoot,
+            env,
+            stdio: "inherit",
+            windowsHide: true,
+        });
+        const forwardInterrupt = () => child.kill("SIGINT");
+        const forwardTermination = () => child.kill("SIGTERM");
+        process.once("SIGINT", forwardInterrupt);
+        process.once("SIGTERM", forwardTermination);
+        child.once("error", (error) => {
+            console.error(`Unable to start Vitest: ${error.message}`);
+        });
+        child.once("close", (code) => {
+            process.removeListener("SIGINT", forwardInterrupt);
+            process.removeListener("SIGTERM", forwardTermination);
+            resolve(code ?? 1);
+        });
+    });
 }
-child.once("error", (error) => {
-    console.error(`Unable to start Vitest: ${error.message}`);
+
+const delimiter = vitestArgs.indexOf("--");
+const options = delimiter < 0 ? vitestArgs : vitestArgs.slice(0, delimiter);
+const filesOnlyOptions = options.filter(arg => /^--(?:no-)?files-?only(?:=|$)/i.test(arg));
+// Plain `list` imports test modules, including native readiness checks.
+const queryOnly = (options[0] === "list" && filesOnlyOptions.length === 1 && ["--filesOnly", "--files-only", "--filesOnly=true", "--files-only=true"].includes(filesOnlyOptions[0]))
+    || options.some(arg => ["--help", "-h", "--version", "-v"].includes(arg));
+try {
+    const env = queryOnly ? hiddenChildProcessEnv() : buildBeforeRun(hiddenChildProcessEnv());
+    if (!queryOnly && Number(env.CCC_TEST_LEVEL || 0) >= 2) {
+        await import(pathToFileURL(join(repoRoot, "scripts", "real-tests", "typescript-source-loader.mjs")).href);
+        const { withExclusiveRealProviderRun } = await import("./real-tests/exclusive-real-provider-run.ts");
+        process.exitCode = await withExclusiveRealProviderRun("Vitest native providers", () => runVitest(env));
+    } else {
+        process.exitCode = await runVitest(env);
+    }
+} catch (error) {
+    console.error(`FAIL ${error?.message || String(error)}`);
     process.exitCode = 1;
-});
-child.once("exit", (code) => {
-    process.exitCode = code ?? 1;
-});
+}

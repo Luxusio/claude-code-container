@@ -15,11 +15,12 @@ export interface BrokerWindowsSandboxHelperPaths {
     minimizeWatchdogCancelPath: string;
     minimizeWatchdogResultPath: string;
 }
+type NativeEffect<T> = T | Promise<T>;
 /** Native guarded leaves; lifecycle choices and response/compensation policy live inward. */
 export interface BrokerWindowsSandboxLifecyclePorts<Prepared, Receipt> {
     prepare(ownerId:string,request:BrokerWindowsSandboxRequest,device:unknown):BrokerWindowsSandboxPrepared<Prepared>;
-    run(handle:Prepared,options:{timeoutMs:number;outputLimit:number}):BrokerWindowsSandboxResult<Receipt>;
-    listRuntime(handle:Prepared,options:{timeoutMs:number;outputLimit:number}):BrokerWindowsSandboxResult<Receipt>&{ids:string[]};
+    run(handle:Prepared,options:{timeoutMs:number;outputLimit:number}):NativeEffect<BrokerWindowsSandboxResult<Receipt>>;
+    listRuntime(handle:Prepared,options:{timeoutMs:number;outputLimit:number}):NativeEffect<BrokerWindowsSandboxResult<Receipt>&{ids:string[]}>;
     isCanonicalConfig(ownerId: string, deviceId: string, path: string): boolean;
     writeConfig(ownerId: string, deviceId: string, device: Record<string, unknown>): undefined;
     claimSingleton(ownerId: string, device: unknown, sandboxId?: string): {
@@ -33,9 +34,9 @@ export interface BrokerWindowsSandboxLifecyclePorts<Prepared, Receipt> {
     updateSingletonRuntimeId(ownerId: string, device: unknown, claimedId: string | undefined, runtimeId: string): undefined;
     helperPaths(ownerId: string, deviceId: string): BrokerWindowsSandboxHelperPaths;
     removeMarker(path: string): undefined;
-    snapshotWindows(options:{timeoutMs:number;outputLimit:number}):BrokerWindowsSandboxResult<Receipt>&{handles:number[]|null};
-    launchWatchdog(startedAfter:string,paths:BrokerWindowsSandboxHelperPaths,baseline:number[],options:{timeoutMs:number;outputLimit:number}):BrokerWindowsSandboxResult<Receipt>;
-    waitForMinimizeConfirmation(path: string): BrokerWindowsSandboxResult<Receipt>;
+    snapshotWindows(options:{timeoutMs:number;outputLimit:number}):NativeEffect<BrokerWindowsSandboxResult<Receipt>&{handles:number[]|null}>;
+    launchWatchdog(startedAfter:string,paths:BrokerWindowsSandboxHelperPaths,baseline:number[],options:{timeoutMs:number;outputLimit:number}):NativeEffect<BrokerWindowsSandboxResult<Receipt>>;
+    waitForMinimizeConfirmation(path: string): NativeEffect<BrokerWindowsSandboxResult<Receipt>>;
     cancelWatchdog(ownerId: string, deviceId: string): {
         attempted: boolean;
         ok: boolean;
@@ -53,7 +54,7 @@ export interface BrokerWindowsSandboxLifecyclePorts<Prepared, Receipt> {
     publish(ownerId: string, stateKey: string, deviceId: string, expected: unknown, change: BrokerWindowsSandboxChange): BrokerWindowsSandboxPublication;
     now(): number;
     timestampBefore(milliseconds: number): string;
-    sleep(milliseconds: number): undefined;
+    sleep(milliseconds: number): NativeEffect<void>;
     readonly platform: string;
     readonly commandTimeoutMs: number;
     readonly outputLimit: number;

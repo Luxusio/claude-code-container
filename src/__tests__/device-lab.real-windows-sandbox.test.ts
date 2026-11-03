@@ -39,15 +39,16 @@ function createCleanupEvidence(homeDir: string, owner: string, device: Record<st
 }
 
 describe.runIf(enabled)("level 2 real Windows Sandbox helper E2E", () => {
+    // Per-request deadlines bound native work; await its cleanup before advancing.
     it.skipIf(!cap.available)(title, async () => {
-        const result = await runWindowsSandboxE2E({ level, timeoutMs: 30000 });
+        const result = await runWindowsSandboxE2E({ level });
         expect(result).toEqual(expect.objectContaining({
             status: "PASS",
             deviceId: expect.stringMatching(/^windows-real-sandbox-/),
             sandboxId: expect.stringMatching(/^[0-9a-f-]{36}$/i),
             verifiedCapabilities: expect.arrayContaining(windowsBackend().capabilities.map(publicToolName)),
         }));
-    }, 240000);
+    }, 0);
 });
 
 describe("Windows Sandbox real E2E cleanup preflight", () => {

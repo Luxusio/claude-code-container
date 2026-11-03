@@ -48,7 +48,7 @@ function fixture() {
         const parsed = { ok: true as const, backend: "windows-sandbox", stateKey: "windows", deviceId: "sandbox", command, force: false, dryRun: false, minimized: false };
         return { ownerId: "owner", parsed, device: current, expectedDevice: current, prepared: ports.prepare("owner", parsed, current) };
     }
-    return { ports, effects, runs, input, app: createBrokerWindowsSandboxLifecycle(ports), read: () => current, locked: () => locked, replace: (record: Record<string, unknown>) => { current = record; } };
+    return { ports, effects, runs, input, app: createBrokerWindowsSandboxLifecycle(ports), read: () => current, locked: () => locked, advance: (milliseconds: number) => { clock += milliseconds; }, replace: (record: Record<string, unknown>) => { current = record; } };
 }
 
 describe("broker Windows Sandbox lifecycle application", () => {
@@ -102,6 +102,34 @@ describe("broker Windows Sandbox lifecycle application", () => {
         expect(f.locked()).toBe(true);
         expect(f.runs.some(handle => handle.operation === "device_stop")).toBe(false);
         expect(f.effects).not.toContain("remove-artifacts");
+    });
+    it("clips asynchronous Windows Sandbox registration waits to the original allowance", async () => {
+        const f = fixture(), sleeps: number[] = [], timeouts: number[] = [];
+        let launched = false;
+        f.ports.run = async handle => { f.runs.push(handle); launched = true; return { ok: true, receipt: { native: "wsb" } }; };
+        f.ports.listRuntime = async (_handle, options) => {
+            if (launched) { timeouts.push(options.timeoutMs); f.advance(59999); }
+            return { ok: true, ids: [] };
+        };
+        f.ports.sleep = async milliseconds => { sleeps.push(milliseconds); f.advance(milliseconds); };
+        expect(await f.app.start(f.input("device_start"))).toMatchObject({
+            kind: "indeterminate", facts: { registration: { registrationFailure: "timeout" } },
+        });
+        expect(timeouts).toEqual([10000]);
+        expect(sleeps).toEqual([1]);
+        expect(f.read()).toMatchObject({ status: "stopped" });
+        expect(f.locked()).toBe(true);
+    });
+    it("does not publish asynchronous Windows Sandbox registration arriving after its deadline", async () => {
+        const f = fixture();
+        f.ports.listRuntime = async () => {
+            if (!f.runs.length) return { ok: true, ids: [] };
+            f.advance(60001);
+            return { ok: true, ids: [registeredGuid] };
+        };
+        expect(await f.app.start(f.input("device_start"))).toMatchObject({ kind: "indeterminate", facts: { registration: { registrationFailure: "timeout" } } });
+        expect(f.read()).toMatchObject({ status: "stopped", sandboxId: guid });
+        expect(f.locked()).toBe(true);
     });
     it("advances expected publication only after committed auxiliary cleanup", async () => {
         const f = fixture();

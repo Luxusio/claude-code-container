@@ -11857,7 +11857,7 @@ vi.mock("fs", async (importOriginal) => ({ ...await importOriginal<typeof import
 
 // The controller lives outside the broker process. A synchronous native wait cannot
 // delay this controller's deadline or release the gate before responsiveness is proved.
-type AndroidHttpFixturePhase = "create" | "boot" | "stop-inventory" | "owner-cleanup" | "auxiliary-stopped" | "auxiliary-no-stop" | "macos-boot" | "macos-owner-cleanup" | "macos-spawn-error" | "macos-status" | "macos-status-failure" | "macos-helper" | "macos-helper-failure" | "macos-helper-deadline" | "macos-helper-killed" | "macos-helper-invalid-frame" | "macos-helper-recovered";
+type AndroidHttpFixturePhase = "sandbox-registration" | "sandbox-minimize" | "create" | "boot" | "stop-inventory" | "owner-cleanup" | "auxiliary-stopped" | "auxiliary-no-stop" | "macos-boot" | "macos-owner-cleanup" | "macos-spawn-error" | "macos-status" | "macos-status-failure" | "macos-helper" | "macos-helper-failure" | "macos-helper-deadline" | "macos-helper-killed" | "macos-helper-invalid-frame" | "macos-helper-recovered";
 type AndroidHttpFixtureReply = { status: number; body: Record<string, any> };
 type AndroidHttpFixtureReady = { baseUrl: string; owners: Array<{ id: string; token: string; file: string }>; initial: Record<string, unknown> };
 
@@ -11880,6 +11880,31 @@ async function gate(name) {
     }
 }
 async function main() {
+    if (tool === 'wsb') {
+        if (args[0] === 'start') {fs.writeFileSync(file('active-sandbox'), ''); return;}
+        if (args[0] === 'list') {
+            if (has('active-sandbox')) await gate('sandbox-registration');
+            console.log(JSON.stringify(has('active-sandbox') ? ['12345678-1234-4234-9234-1234567890cc'] : []));
+            return;
+        }
+        throw Error('unallocated Sandbox operation');
+    }
+    if (tool === 'powershell.exe') {
+        const script = Buffer.from(args[args.indexOf('-EncodedCommand') + 1] || '', 'base64').toString('utf16le');
+        if (script.includes('$Process = Start-Process') && script.includes('-WindowStyle Minimized')) {
+            fs.writeFileSync(file('active-sandbox'), ''); return;
+        }
+        if (script.includes('CccNativeWindow')) {
+            await gate('sandbox-minimize');
+            const result = script.match(/\$ResultPath = '((?:''|[^'])*)'/)?.[1]?.replaceAll("''", "'");
+            if (!result) throw Error('missing owned minimize result path');
+            fs.mkdirSync(path.dirname(result), {recursive: true});
+            fs.writeFileSync(result, 'minimized');
+            return;
+        }
+        if (script.includes('$Handles = @(Get-Process')) {console.log('[]'); return;}
+        throw Error('unallocated Sandbox PowerShell operation');
+    }
     if (tool === 'process-inventory') {
         const probeArgs = args[0] === '-WindowStyle' && args[1] === 'Hidden' ? args.slice(2) : args;
         const posixInventory = probeArgs.length === 2 && probeArgs[0] === '-eo' && probeArgs[1] === 'args=';
@@ -12035,13 +12060,15 @@ const deadline = setTimeout(() => { console.error('owned broker fixture deadline
     // This is a normal Node import of the current emitted package graph. No test
     // runner, TypeScript loader, commandRunner or in-broker release timer is used.
     const broker = await import(settings.brokerModule), owner = await import(settings.ownerModule);
-    const macos = settings.phase.startsWith('macos-');
+    const macos = settings.phase.startsWith('macos-'), sandbox = settings.phase.startsWith('sandbox-');
     const owners = settings.projects.map(project => {
         const id = owner.deviceLabOwnerId(project);
         broker.registerDeviceBrokerOwner(project);
-        return {id, token: broker.deviceBrokerOwnerToken(id), file: path.join(settings.home, '.ccc', 'devices', 'owners', id, macos ? 'macos' : 'android', 'devices.json')};
+        return {id, token: broker.deviceBrokerOwnerToken(id), file: path.join(settings.home, '.ccc', 'devices', 'owners', id, sandbox ? 'windows' : macos ? 'macos' : 'android', 'devices.json')};
     });
-    const initial = macos ? {id: 'responsive-mac', backend: 'macos-vm', provider: 'tart', providerInstance: 'ccc-' + owners[0].id + '-responsive-mac',
+    const initial = sandbox ? {id: 'responsive-sandbox', backend: 'windows-sandbox', status: 'stopped',
+        sandboxId: '12345678-1234-4234-9234-1234567890cc', configPath: path.join(path.dirname(owners[0].file), 'sandbox.wsb'),
+        minimized: settings.phase === 'sandbox-minimize'} : macos ? {id: 'responsive-mac', backend: 'macos-vm', provider: 'tart', providerInstance: 'ccc-' + owners[0].id + '-responsive-mac',
         status: ['macos-boot', 'macos-spawn-error'].includes(settings.phase) ? 'stopped' : settings.phase.startsWith('macos-status') ? 'running' : 'starting', name: 'Responsive Mac', createdAt: '2026-10-19T00:00:00.000Z',
         preferences: {keep: 'exact-publication-witness'}, ...(settings.phase === 'macos-owner-cleanup' ? {lifecycle: {runtimeId: 'owned-pending-mac', operation: 'start', claimedAt: '2026-10-19T00:00:01.000Z'}} : {})}
         : {id: 'responsive-pixel', backend: 'android-emulator', status: ['boot', 'auxiliary-stopped'].includes(settings.phase) ? 'stopped' : 'running',
@@ -12067,7 +12094,8 @@ const deadline = setTimeout(() => { console.error('owned broker fixture deadline
     if (settings.phase !== 'create' && !settings.phase.startsWith('macos-helper')) {
         fs.mkdirSync(path.dirname(owners[0].file), {recursive: true});
         fs.writeFileSync(owners[0].file, JSON.stringify({devices: [initial]}));
-        if (macos) {
+        if (sandbox) fs.writeFileSync(initial.configPath, '<Configuration></Configuration>');
+        else if (macos) {
             if (['starting', 'running'].includes(initial.status)) fs.writeFileSync(path.join(settings.home, 'active-macos'), '');
             if (settings.phase.startsWith('macos-status')) {
                 fs.mkdirSync(path.dirname(owners[1].file), {recursive: true});
@@ -12081,9 +12109,9 @@ const deadline = setTimeout(() => { console.error('owned broker fixture deadline
         }
     }
     server = broker.createDeviceBrokerServer({cwd: settings.projects[0], host: '127.0.0.1', port: 0,
-        ...(macos ? {platform: 'darwin'} : {}),
+        ...(sandbox ? {platform: 'win32'} : macos ? {platform: 'darwin'} : {}),
         commandTimeoutMs: ['owner-cleanup', 'macos-owner-cleanup'].includes(settings.phase) ? 2000 : 10000,
-        providerPaths: Object.fromEntries(['adb', 'emulator', 'avdmanager', 'tart'].map(tool => [tool, path.join(settings.bin, tool)]))});
+        providerPaths: Object.fromEntries(['adb', 'emulator', 'avdmanager', 'tart', ...(sandbox ? ['wsb'] : [])].map(tool => [tool, path.join(settings.bin, tool)]))});
     await new Promise((resolve, reject) => {server.once('error', reject); server.listen(0, '127.0.0.1', resolve);});
     process.send({baseUrl: 'http://127.0.0.1:' + server.address().port, owners, initial});
     const shutdown = async () => {
@@ -12131,7 +12159,7 @@ async function createAndroidHttpFixture(phase: AndroidHttpFixturePhase, helperOp
     writeFileSync(join(root, 'package.json'), JSON.stringify({type: 'commonjs'}));
     const brokerModule = import.meta.resolve('@ccc/device-lab/device-lab-broker.js');
     expect(new URL(brokerModule).pathname, 'current emitted broker is required').toMatch(/\/dist\/device-lab-broker\.js$/);
-    for (const tool of ['adb', 'emulator', 'avdmanager', 'tart', 'process-inventory', 'ssh', 'scp']) writeFileSync(join(bin, tool), '#!/usr/bin/env node\nconst tool = ' + JSON.stringify(tool) + ';\n' + androidHttpFixtureNative, {mode: 0o700});
+    for (const tool of ['adb', 'emulator', 'avdmanager', 'tart', 'process-inventory', 'ssh', 'scp', ...(phase.startsWith('sandbox-') ? ['wsb', 'powershell.exe'] : [])]) writeFileSync(join(bin, tool), '#!/usr/bin/env node\nconst tool = ' + JSON.stringify(tool) + ';\n' + androidHttpFixtureNative, {mode: 0o700});
     if (phase === 'macos-spawn-error') {
         // An existing executable reaches the real POSIX spawn boundary, whose
         // missing interpreter yields an error event without assigning a PID.
@@ -12211,6 +12239,12 @@ cp.spawnSync = function(command, args = [], options = {}) {
     return androidHttpNativeSpawnSync.call(this, command, args, options);
 };
 cp.spawn = function(command, args = [], options = {}) {
+    if (${JSON.stringify(phase.startsWith('sandbox-'))} && path.win32.basename(command).toLowerCase() === 'powershell.exe') {
+        const script = Buffer.from(args[args.indexOf('-EncodedCommand') + 1] || '', 'base64').toString('utf16le');
+        if (script.includes('$Handles = @(Get-Process') || script.includes('CccNativeWindow') || script.includes('$Process = Start-Process') && script.includes('-WindowStyle Minimized')) {
+            return androidHttpInventorySpawn.call(this, path.join(root, 'powershell.exe'), args, options);
+        }
+    }
     const probeArgs = args[0] === '-WindowStyle' && args[1] === 'Hidden' ? args.slice(2) : args;
     const posixInventory = command === '/bin/ps' && probeArgs.length === 2 && probeArgs[0] === '-eo' && probeArgs[1] === 'args=';
     const windowsInventory = path.win32.basename(command).toLowerCase() === 'powershell.exe' && probeArgs.length === 4
@@ -12287,6 +12321,7 @@ if (process.execArgv.some(argument => argument.includes('backend.prepareMacosGue
     const env: NodeJS.ProcessEnv = {...process.env, ...deviceLabTestHomeEnvironment(home), TMPDIR: temporary, TMP: temporary, TEMP: temporary};
     for (const key of Object.keys(env)) if (/^(?:CCC_|ANDROID_)/i.test(key)) delete env[key];
     Object.assign(env, {ANDROID_AVD_HOME: join(home, '.android', 'avd'), CCC_ANDROID_HTTP_PHASE: phase, FAKE_ANDROID_LOG: join(home, 'launcher.log')});
+    if (phase.startsWith('sandbox-')) env.PATH = bin + delimiter + (env.PATH || '');
     delete env.NODE_OPTIONS;
     delete env.NODE_PATH;
     // The real backend helper child must use the same owned fake native leaves.
@@ -12299,7 +12334,7 @@ if (process.execArgv.some(argument => argument.includes('backend.prepareMacosGue
     const exited = new Promise<void>((resolveExit, reject) => child.once('close', code => code === 0 ? resolveExit() : reject(spawnError || new Error('owned broker exited ' + code + ': ' + diagnostics))));
     void exited.catch(() => undefined);
     const requests: Promise<AndroidHttpFixtureReply>[] = [];
-    const release = () => {for (const name of ['create', 'boot', 'stop-inventory', 'owner-cleanup', 'auxiliary-stopped', 'auxiliary-no-stop', 'macos-boot', 'macos-owner-cleanup', 'macos-status', 'macos-status-failure', 'macos-helper', 'macos-helper-failure']) writeFileSync(join(home, 'release-' + name), '');};
+    const release = () => {for (const name of ['create', 'boot', 'stop-inventory', 'owner-cleanup', 'auxiliary-stopped', 'auxiliary-no-stop', 'macos-boot', 'macos-owner-cleanup', 'macos-status', 'macos-status-failure', 'macos-helper', 'macos-helper-failure', 'sandbox-registration', 'sandbox-minimize']) writeFileSync(join(home, 'release-' + name), '');};
     const dispose = async () => {
         release();
         writeFileSync(join(home, 'shutdown'), '');
@@ -12361,6 +12396,25 @@ if (process.execArgv.some(argument => argument.includes('backend.prepareMacosGue
         return {...ready, home, rpc, waitForGate, assertResponsive, records, nativeCalls, release, dispose};
     } catch (error) {await dispose(); throw error;}
 }
+
+describe('emitted default-runner Windows Sandbox HTTP responsiveness', () => {
+    it.each(['sandbox-registration', 'sandbox-minimize'] as const)('keeps health and other-owner RPC responsive during %s', {timeout: 30000}, async phase => {
+        const fixture = await createAndroidHttpFixture(phase);
+        try {
+            const pending = fixture.rpc(0, 'broker.command.invoke', {backend: 'windows-sandbox', command: 'device_start',
+                deviceId: 'responsive-sandbox', minimized: phase === 'sandbox-minimize', dryRun: false});
+            await fixture.waitForGate(pending);
+            await fixture.assertResponsive(pending);
+            expect(fixture.records()).toEqual([expect.objectContaining({status: 'stopped'})]);
+            fixture.release();
+            const reply = await pending.result;
+            expect(reply, JSON.stringify({reply, calls: fixture.nativeCalls()})).toMatchObject({status: 200, body: {ok: true, result: {
+                device: {id: 'responsive-sandbox', status: 'running', ...(phase === 'sandbox-minimize' ? {minimizeConfirmed: true} : {})},
+                execution: {command: {status: 0}},
+            }}});
+        } finally {await fixture.dispose();}
+    });
+});
 
 describe('emitted default-runner Android HTTP responsiveness', () => {
     it('yields during native create and keeps the host allocation lock through provisioning and claim', {timeout: 30000}, async () => {

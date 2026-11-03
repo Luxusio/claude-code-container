@@ -9645,36 +9645,34 @@ function sleepSync(ms: number) {
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.max(0, ms));
 }
 
-export function waitForBrokerWindowsMinimizeConfirmation(resultPath: string, timeoutMs = DEVICE_BROKER_WINDOWS_SANDBOX_MINIMIZE_CONFIRM_TIMEOUT_MS): ProviderCommandResult {
-    const deadline = Date.now() + Math.max(0, timeoutMs);
-    while (true) {
-        if (existsSync(resultPath)) {
-            let result: string;
-            try {
-                const content = readDeviceLabTextFile(resultPath, "windows-sandbox-minimize-result", DEVICE_BROKER_WINDOWS_MINIMIZE_RESULT_LIMIT_BYTES);
-                if (content === null) throw new Error("windows-sandbox-minimize-result-missing");
-                result = content.trim();
-            } catch (error) {
-                return {
-                    mode: "exec",
-                    provider: "windows-sandbox-window",
-                    status: 1,
-                    stdout: "",
-                    stderr: `Windows Sandbox window minimization result is invalid: ${deviceLabStateFileErrorCode(error) || (error instanceof Error ? error.message : String(error))}`,
-                };
-            }
+function readBrokerWindowsMinimizeConfirmation(resultPath: string): ProviderCommandResult | null {
+    if (existsSync(resultPath)) {
+        let result: string;
+        try {
+            const content = readDeviceLabTextFile(resultPath, "windows-sandbox-minimize-result", DEVICE_BROKER_WINDOWS_MINIMIZE_RESULT_LIMIT_BYTES);
+            if (content === null) throw new Error("windows-sandbox-minimize-result-missing");
+            result = content.trim();
+        } catch (error) {
             return {
                 mode: "exec",
                 provider: "windows-sandbox-window",
-                status: result === "minimized" ? 0 : 1,
-                stdout: result,
-                stderr: result === "minimized" ? "" : `Windows Sandbox window minimization reported ${result || "an empty result"}`,
+                status: 1,
+                stdout: "",
+                stderr: `Windows Sandbox window minimization result is invalid: ${deviceLabStateFileErrorCode(error) || (error instanceof Error ? error.message : String(error))}`,
             };
         }
-        const remainingMs = deadline - Date.now();
-        if (remainingMs <= 0) break;
-        sleepSync(Math.min(250, remainingMs));
+        return {
+            mode: "exec",
+            provider: "windows-sandbox-window",
+            status: result === "minimized" ? 0 : 1,
+            stdout: result,
+            stderr: result === "minimized" ? "" : `Windows Sandbox window minimization reported ${result || "an empty result"}`,
+        };
     }
+    return null;
+}
+
+function brokerWindowsMinimizeTimeout(timeoutMs: number): ProviderCommandResult {
     return {
         mode: "exec",
         provider: "windows-sandbox-window",
@@ -9684,6 +9682,32 @@ export function waitForBrokerWindowsMinimizeConfirmation(resultPath: string, tim
         stderr: "",
         error: `Windows Sandbox window was not minimized within ${timeoutMs}ms`,
     };
+}
+
+export function waitForBrokerWindowsMinimizeConfirmation(resultPath: string, timeoutMs = DEVICE_BROKER_WINDOWS_SANDBOX_MINIMIZE_CONFIRM_TIMEOUT_MS): ProviderCommandResult {
+    const deadline = performance.now() + Math.max(0, timeoutMs);
+    while (true) {
+        const result = readBrokerWindowsMinimizeConfirmation(resultPath);
+        if (result) return result;
+        const remainingMs = deadline - performance.now();
+        if (remainingMs <= 0) break;
+        sleepSync(Math.min(250, remainingMs));
+    }
+    return brokerWindowsMinimizeTimeout(timeoutMs);
+}
+
+async function waitForBrokerWindowsMinimizeConfirmationAsync(resultPath: string, timeoutMs = DEVICE_BROKER_WINDOWS_SANDBOX_MINIMIZE_CONFIRM_TIMEOUT_MS): Promise<ProviderCommandResult> {
+    const deadline = performance.now() + Math.max(0, timeoutMs);
+    const initial = readBrokerWindowsMinimizeConfirmation(resultPath);
+    if (initial) return initial;
+    while (true) {
+        const remainingMs = deadline - performance.now();
+        if (remainingMs <= 0) return brokerWindowsMinimizeTimeout(timeoutMs);
+        await sleep(Math.min(250, remainingMs));
+        if (performance.now() >= deadline) return brokerWindowsMinimizeTimeout(timeoutMs);
+        const result = readBrokerWindowsMinimizeConfirmation(resultPath);
+        if (result) return result;
+    }
 }
 
 function mutateDeviceAfterCommand(ownerId: string, parsed: CommandParamSuccess, device: unknown) {
@@ -9987,9 +10011,13 @@ function brokerWindowsLifecyclePorts(normalized: NormalizedBrokerOptions): Broke
                 return { kind: "unavailable", error: command.error, missing: command.missing };
             return { kind: "ready", handle: new NativeProviderLifecycleEffect(command), operationKind: command.mode === "noop" ? "metadata-only" : "runtime", sandboxId: command.sandboxId, minimized: command.windowStyle === "minimized" };
         },
-        run: (handle, options) => nativeLifecycleObservation(runLifecycleEffect(normalized, handle.command, options), handle.command),
-        listRuntime: (handle, options) => {
-            const receipt = normalized.commandRunner({ mode: "exec", provider: "wsb", executable: handle.command.executable, args: ["list", "--raw"] }, options);
+        run: async (handle, options) => {
+            const receipt = await runBudgetedProviderCommand(normalized, handle.command, options);
+            if (normalized.cleanupObservation) normalized.cleanupObservation.execution = receipt;
+            return nativeLifecycleObservation(receipt, handle.command);
+        },
+        listRuntime: async (handle, options) => {
+            const receipt = await runBudgetedProviderCommand(normalized, { mode: "exec", provider: "wsb", executable: handle.command.executable, args: ["list", "--raw"] }, options);
             const observed = nativeLifecycleObservation(receipt);
             return { ...observed, ids: observed.ok ? windowsSandboxSessionIdsFromBrokerListOutput(receipt.stdout || "") : [],
                 ...(!observed.ok ? { error: receipt.error || "windows-sandbox-runtime-snapshot-failed" } : {}),
@@ -10002,19 +10030,19 @@ function brokerWindowsLifecyclePorts(normalized: NormalizedBrokerOptions): Broke
         updateSingletonRuntimeId: (ownerId, device, claimed, runtime) => { updateBrokerWindowsSandboxLockRuntimeId(ownerId, device, claimed, runtime); return undefined; },
         helperPaths: (ownerId, deviceId) => brokerWindowsHelperPaths(ownerId, deviceId),
         removeMarker: path => { rmSync(path, { force: true }); return undefined; },
-        snapshotWindows: options => {
-            const receipt = normalized.commandRunner({ mode: "exec", provider: "powershell", executable: "powershell.exe", args: windowsSandboxWindowHandleSnapshotArgs() }, options);
+        snapshotWindows: async options => {
+            const receipt = await runBudgetedProviderCommand(normalized, { mode: "exec", provider: "powershell", executable: "powershell.exe", args: windowsSandboxWindowHandleSnapshotArgs() }, options);
             const observed = nativeLifecycleObservation(receipt);
             return { ...observed, handles: observed.ok ? windowsSandboxWindowHandlesFromOutput(receipt.stdout || "") : null };
         },
-        launchWatchdog: (startedAfter, paths, handles, options) => {
-            const receipt = normalized.commandRunner({ mode: "detached", provider: "powershell", executable: "powershell.exe", args: windowsSandboxMinimizeWatchdogArgs(DEVICE_BROKER_WINDOWS_SANDBOX_MINIMIZE_WATCHDOG_MS, startedAfter, paths.minimizeWatchdogCancelPath, handles, paths.minimizeWatchdogResultPath) }, options);
+        launchWatchdog: async (startedAfter, paths, handles, options) => {
+            const receipt = await runBudgetedProviderCommand(normalized, { mode: "detached", provider: "powershell", executable: "powershell.exe", args: windowsSandboxMinimizeWatchdogArgs(DEVICE_BROKER_WINDOWS_SANDBOX_MINIMIZE_WATCHDOG_MS, startedAfter, paths.minimizeWatchdogCancelPath, handles, paths.minimizeWatchdogResultPath) }, options);
             const observed = nativeLifecycleObservation(receipt);
             return { ...observed, ...(!observed.ok ? { minimizeReason: "watchdog-launch-failed" as const,
                 minimizeWarning: receipt.error || receipt.stderr || "Windows Sandbox started, but window minimization was not confirmed" } : {}) };
         },
-        waitForMinimizeConfirmation: path => {
-            const receipt = waitForBrokerWindowsMinimizeConfirmation(path);
+        waitForMinimizeConfirmation: async path => {
+            const receipt = await waitForBrokerWindowsMinimizeConfirmationAsync(path);
             const observed = nativeLifecycleObservation(receipt);
             return { ...observed, ...(!observed.ok ? { minimizeReason: "not-confirmed" as const,
                 minimizeWarning: receipt.error || receipt.stderr || "Windows Sandbox started, but window minimization was not confirmed" } : {}) };
@@ -10037,7 +10065,7 @@ function brokerWindowsLifecyclePorts(normalized: NormalizedBrokerOptions): Broke
         }),
         now: () => performance.now(),
         timestampBefore: milliseconds => new Date(Date.now() - milliseconds).toISOString(),
-        sleep: milliseconds => { sleepSync(milliseconds); return undefined; },
+        sleep: milliseconds => sleep(milliseconds),
         get platform() { return normalized.platform; },
         get commandTimeoutMs() { return normalized.commandTimeoutMs; },
         outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,

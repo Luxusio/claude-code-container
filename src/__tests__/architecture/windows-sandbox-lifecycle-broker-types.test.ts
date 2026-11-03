@@ -34,8 +34,9 @@ function contracts(ports: BrokerWindowsSandboxLifecyclePorts<Prepared, Receipt>,
     const { cleanupAuxiliary, ...withoutCleanup } = ports;
     // @ts-expect-error auxiliary cleanup and committed expected-record advancement are required
     createBrokerWindowsSandboxLifecycle(withoutCleanup);
-    // @ts-expect-error native command results must settle synchronously
+    // Native effects can settle asynchronously without exposing transport framing inward.
     createBrokerWindowsSandboxLifecycle({ ...ports, run: async () => ({ ok: true }) });
+    createBrokerWindowsSandboxLifecycle({ ...ports, listRuntime: async () => ({ ok: true, ids: [] }) });
     // @ts-expect-error runtime inventory must carry settled IDs rather than native framing
     createBrokerWindowsSandboxLifecycle({ ...ports, listRuntime: () => ({ ok: true, stdout: "[]" }) });
     // @ts-expect-error window inventory must distinguish unavailable handles from an empty baseline

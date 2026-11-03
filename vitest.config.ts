@@ -1,8 +1,38 @@
-import { defineConfig } from 'vitest/config'
+import { configDefaults, defineConfig } from 'vitest/config'
+import { parseCLI } from 'vitest/node'
 import { availableParallelism } from 'os'
 import { fileURLToPath } from 'url'
 
 const maxWorkers = Math.max(1, Math.min(8, Math.floor(availableParallelism() / 2)))
+const realProvidersEnabled = Number(process.env.CCC_TEST_LEVEL || 0) >= 2
+// Vitest's inline-project CLI overrides omit maxWorkers. Read its own CLI
+// parser only at the real CLI entry, leaving programmatic config loads alone.
+let ordinaryMaxWorkers = realProvidersEnabled && /(?:^|[\\/])vitest(?:\.mjs)?$/i.test(process.argv[1] || '')
+    ? parseCLI(['vitest', ...process.argv.slice(2)], { allowUnknownOptions: true }).options.maxWorkers
+    : undefined
+if (realProvidersEnabled && process.env.VITEST_MAX_WORKERS) {
+    ordinaryMaxWorkers = Number.parseInt(process.env.VITEST_MAX_WORKERS, 10)
+    if (!Number.isSafeInteger(ordinaryMaxWorkers) || ordinaryMaxWorkers < 1) throw new Error('VITEST_MAX_WORKERS must select at least one worker')
+    // Vitest applies this environment override after fileParallelism:false,
+    // defeating its one-worker limit. Apply it to the ordinary project instead.
+    delete process.env.VITEST_MAX_WORKERS
+}
+const include = [
+    'src/__tests__/**/*.test.?(m|c)[jt]s',
+    'scripts/real-tests/**/*.test.?(m|c)[jt]s',
+]
+// These wrappers use native host resources; similarly named physical-device
+// contract fixtures remain in the parallel ordinary suite.
+const realProviderFiles = [
+    'src/__tests__/device-lab.real-provider-readiness.test.ts',
+    'src/__tests__/device-lab.real-host-integration.test.ts',
+    'src/__tests__/device-lab.real-ios-e2e.test.ts',
+    'src/__tests__/device-lab.real-android-emulator-e2e.test.ts',
+    'src/__tests__/device-lab.real-macos-vm-e2e.test.ts',
+    'src/__tests__/device-lab.real-windows-sandbox.test.ts',
+    'src/__tests__/device-lab-mcp.real-linux-vm.test.ts',
+    'src/__tests__/device-lab.real-destructive.test.ts',
+]
 
 export default defineConfig({
     // Workspace unit tests observe source edits, including in watch mode.
@@ -33,10 +63,27 @@ export default defineConfig({
         // hyper-v-windows-library-elevation.test.mjs from the suite. Scoping collection is exactly
         // the change that can hide a test, so the pattern is checked against
         // `git ls-files` rather than written from memory.
-        include: [
-            "src/__tests__/**/*.test.?(m|c)[jt]s",
-            "scripts/real-tests/**/*.test.?(m|c)[jt]s",
-        ],
+        ...(realProvidersEnabled ? {
+            // Root includes merge into child projects, so define them only here.
+            projects: [
+                {
+                    extends: true,
+                    test: {
+                        name: 'ordinary', include,
+                        exclude: [...configDefaults.exclude, ...realProviderFiles],
+                        ...(ordinaryMaxWorkers === undefined ? {} : { maxWorkers: ordinaryMaxWorkers }),
+                    },
+                },
+                {
+                    extends: true,
+                    test: {
+                        name: 'native', include: realProviderFiles,
+                        fileParallelism: false, maxWorkers: 1,
+                        sequence: { groupOrder: 1 },
+                    },
+                },
+            ],
+        } : { include }),
         globals: true,
         setupFiles: ['./scripts/real-tests/hidden-child-processes.cjs', './scripts/test-temp-root.cjs'],
         maxWorkers,
