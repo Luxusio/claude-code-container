@@ -23,9 +23,15 @@ const preparations = new WeakMap<RuntimeBindHomePreparation, { root: Directory; 
 const guards = new WeakMap<RuntimeBindGuard, GuardState>();
 const snapshots = new WeakMap<RuntimeBindAuthoritySnapshot, SnapshotState>();
 const tickets = new WeakMap<RuntimeBindCreationTicket, { guard: RuntimeBindGuard; token: string; snapshot: RuntimeBindAuthoritySnapshot }>();
+type FailureReason = "evidence-changed" | "history-invalid" | "history-root-changed" | "history-unreadable";
+const failureReasons = new WeakMap<object, FailureReason>();
+const unknownReasons = new WeakMap<RuntimeBindAuthoritySnapshot, FailureReason>();
 
-function refuse(): never {
-    throw Object.assign(new Error("Runtime bind authority is unavailable or changed; shared state was preserved."), { code: "runtime-bind-authority-unavailable" });
+function refuse(reason: FailureReason = "evidence-changed"): never {
+    const error = Object.assign(new Error(`Runtime bind authority is unavailable or changed (${reason}); shared state was preserved.`),
+        { code: "runtime-bind-authority-unavailable" });
+    failureReasons.set(error, reason);
+    throw error;
 }
 
 function absent(error: unknown): boolean {
@@ -123,14 +129,24 @@ function decodedIdentity(value: unknown): Identity {
 }
 
 function decodeHistory(text: string, root: Identity): History {
-    const input = closed(JSON.parse(text), ["version", "root", "coverage", "authorities", "pending"]);
-    if (input.version !== 1 || !sameIdentity(decodedIdentity(input.root), root)
+    let input: Record<string, unknown>;
+    let recordedRoot: Identity;
+    try {
+        input = closed(JSON.parse(text), ["version", "root", "coverage", "authorities", "pending"]);
+        recordedRoot = decodedIdentity(input.root);
+    } catch { return refuse("history-invalid"); }
+    // Device numbers identify a mount during one operation, not its durable
+    // identity across restarts. Keep all current guard/file comparisons strict.
+    if (recordedRoot.inode !== root.inode || recordedRoot.birthtime !== root.birthtime) return refuse("history-root-changed");
+    if (input.version !== 1
         || (input.coverage !== "complete" && input.coverage !== "incomplete")
         || !Array.isArray(input.authorities) || input.authorities.length > AUTHORITY_LIMIT
-        || (input.pending !== null && (typeof input.pending !== "string" || !/^[a-f0-9]{32}$/.test(input.pending)))) return refuse();
-    const authorities = input.authorities.map(validateNativeRuntimeInvocation);
-    if (new Set(authorities.map(value => JSON.stringify(value))).size !== authorities.length) return refuse();
-    return { version: 1, root, coverage: input.coverage, authorities: Object.freeze(authorities), pending: input.pending };
+        || (input.pending !== null && (typeof input.pending !== "string" || !/^[a-f0-9]{32}$/.test(input.pending)))) return refuse("history-invalid");
+    let authorities: NativeRuntimeInvocation[];
+    try { authorities = input.authorities.map(validateNativeRuntimeInvocation); }
+    catch { return refuse("history-invalid"); }
+    if (new Set(authorities.map(value => JSON.stringify(value))).size !== authorities.length) return refuse("history-invalid");
+    return { version: 1, root: recordedRoot, coverage: input.coverage, authorities: Object.freeze(authorities), pending: input.pending };
 }
 
 function held(guard: RuntimeBindGuard): GuardState {
@@ -249,18 +265,22 @@ export function readRuntimeBindAuthority(guard: RuntimeBindGuard): RuntimeBindAu
         }) as RuntimeBindAuthoritySnapshot;
         snapshots.set(snapshot, { guard, history, file, barrier });
         return snapshot;
-    } catch {
+    } catch (error) {
         const unknown: RuntimeBindAuthorityFacts = Object.freeze({
             coverage: "unknown", pending: true, authorities: Object.freeze([]), reason: "history-unknown",
         });
-        return unknown as RuntimeBindAuthoritySnapshot;
+        const snapshot = unknown as RuntimeBindAuthoritySnapshot;
+        unknownReasons.set(snapshot, error !== null && typeof error === "object"
+            ? failureReasons.get(error) ?? "history-unreadable" : "history-unreadable");
+        return snapshot;
     }
 }
 
 export function assertRuntimeBindAuthorityCurrent(guard: RuntimeBindGuard, snapshot: RuntimeBindAuthoritySnapshot): void {
     const state = held(guard);
     const captured = snapshots.get(snapshot);
-    if (!captured || captured.guard !== guard
+    if (!captured) return refuse(unknownReasons.get(snapshot) ?? "evidence-changed");
+    if (captured.guard !== guard
         || !sameFile(captured.file, privateFile(join(state.directory.path, HISTORY), HISTORY_LIMIT))
         || !sameFile(captured.barrier, optionalFile(join(state.directory.path, REMOTE_BARRIER), 4096))) return refuse();
     held(guard);
@@ -271,7 +291,8 @@ function append(snapshot: RuntimeBindAuthoritySnapshot, invocation: NativeRuntim
     if (!captured) return refuse();
     const value = validateNativeRuntimeInvocation(invocation);
     const equal = captured.history.authorities.some(previous => JSON.stringify(previous) === JSON.stringify(value));
-    return { ...captured.history, coverage: snapshot.coverage === "complete" ? "complete" : "incomplete",
+    return { ...captured.history, root: held(captured.guard).root.identity,
+        coverage: snapshot.coverage === "complete" ? "complete" : "incomplete",
         authorities: equal ? captured.history.authorities : [...captured.history.authorities, value] };
 }
 

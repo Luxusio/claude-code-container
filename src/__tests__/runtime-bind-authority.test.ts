@@ -137,6 +137,50 @@ describe("retained runtime bind authority on private native files", () => {
         });
     });
 
+    it.each([
+        ["complete", null], ["complete", "a".repeat(32)],
+        ["incomplete", null], ["incomplete", "a".repeat(32)],
+    ] as const)("reopens retained device numbers without losing %s coverage or pending=%s", (coverage, pending) => {
+        const home = freshHome();
+        const first = invocation();
+        const second = invocation("unix:///fixture/second.sock");
+        withRuntimeBindGuard(home, guard => {
+            recordRuntimeBindAuthority(guard, first);
+            recordRuntimeBindAuthority(guard, second);
+        });
+        const retained = JSON.parse(readFileSync(history(), "utf8"));
+        retained.root.device = String(BigInt(retained.root.device) + 1n);
+        retained.coverage = coverage;
+        retained.pending = pending;
+        writeFileSync(history(), JSON.stringify(retained), { mode: 0o600 });
+        const before = readFileSync(history());
+
+        withRuntimeBindGuard(root, guard => {
+            const snapshot = readRuntimeBindAuthority(guard);
+            expect(snapshot).toMatchObject({ coverage, pending: pending !== null, authorities: [first, second] });
+            assertRuntimeBindAuthorityCurrent(guard, snapshot);
+            expect(readFileSync(history())).toEqual(before);
+            // Deduplication must still publish the newly captured root identity.
+            expect(recordRuntimeBindAuthority(guard, first)).toMatchObject({ coverage, pending: pending !== null,
+                authorities: [first, second] });
+        });
+        expect(JSON.parse(readFileSync(history(), "utf8"))).toEqual({ ...retained,
+            root: { ...retained.root, device: String(lstatSync(root, { bigint: true }).dev) } });
+    });
+
+    it.each(["inode", "birthtime"] as const)("refuses retained history for a changed root %s", field => {
+        const home = freshHome();
+        const retained = JSON.parse(readFileSync(history(), "utf8"));
+        retained.root[field] = String(BigInt(retained.root[field]) + 1n);
+        writeFileSync(history(), JSON.stringify(retained), { mode: 0o600 });
+        const before = readFileSync(history());
+        withRuntimeBindGuard(home, guard => {
+            expect(readRuntimeBindAuthority(guard).coverage).toBe("unknown");
+            expect(() => recordRuntimeBindAuthority(guard, invocation())).toThrow("history-root-changed");
+        });
+        expect(readFileSync(history())).toEqual(before);
+    });
+
     it("refuses the sixty-fifth authority without evicting old authority or dispatching the effect", () => {
         const home = freshHome();
         withRuntimeBindGuard(home, guard => {
