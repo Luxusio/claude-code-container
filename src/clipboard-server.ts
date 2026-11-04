@@ -35,15 +35,16 @@ import { fileURLToPath } from "url";
 import { CLIPBOARD_FILES_CONTAINER_DIR } from "./utils.js";
 import { cccHome, clipboardFilesDir, clipboardPortFile, clipboardStartingLock, helperBinDir, locksDir } from "./home-layout.js";
 import { tryAcquireClipboardStartupLock, recoverDeadClipboardStartupLock, releaseClipboardStartupLock } from "./clipboard-startup-lock.js";
-import { clipboardPortMayHaveBindUsers } from "./clipboard-bind-users.js";
+import { clipboardPortBindAdmission, clipboardPortMayHaveBindUsers } from "./clipboard-bind-users.js";
+import { runtimeBindAdmission } from "./application/runtime-bind-admission.js";
 import { prepareRuntimeBindHome, withRuntimeBindGuardAsync, readRuntimeBindAuthority, assertRuntimeBindAuthorityCurrent } from "./adapters/runtime-bind-authority.js";
 import { getRuntimeInvocation, peekRuntimeInvocation, runWithNativeRuntimeInvocation, validateNativeRuntimeInvocation } from "./container-runtime.js";
 import { nativeSessionOwnershipMatches, captureNativeSessionOwnership } from "./adapters/session-ownership.js";
 import type { SessionOwnershipReceipt } from "./ports/session-ownership.js";
 import type { RuntimeBindGuard, RuntimeBindHomePreparation } from "./ports/runtime-bind-authority.js";
 import type { NativeRuntimeInvocation } from "./ports/container-runtime-invocation.js";
-import type { ClipboardPublication } from "./ports/clipboard/server-lifecycle.js";
-import type { ClipboardPortRecord, ClipboardSelection } from "./domain/clipboard/server-lifecycle.js";
+import type { ClipboardPublication, ClipboardPublicationPreparation } from "./ports/clipboard/server-lifecycle.js";
+import type { ClipboardPortRecord, ClipboardSelection, ClipboardSessionPresence, ClipboardUpgradeDeferralReason } from "./domain/clipboard/server-lifecycle.js";
 import { sessionLockLiveness } from "./session-lock-liveness.js";
 import { canonicalWindowsPowerShellPath, hiddenWindowsPowerShellArgs } from "@ccc/device-lab/windows-system-powershell.js";
 
@@ -1671,31 +1672,34 @@ export async function validateClipboardSelection(selected: ClipboardSelection | 
     } catch { return null; }
 }
 
-function preparePortPublication(portFile: string, guard: RuntimeBindGuard): ClipboardPublication | null {
+function preparePortPublication(portFile: string, guard: RuntimeBindGuard): ClipboardPublicationPreparation {
+    const deferred = (reason: ClipboardUpgradeDeferralReason = "publication-unverified"): ClipboardPublicationPreparation => ({ kind: "deferred", reason });
     try {
         const snapshot = readRuntimeBindAuthority(guard);
+        const historyAdmission = runtimeBindAdmission(snapshot, "absent");
+        if (!historyAdmission.allowed) return deferred(historyAdmission.reason);
         const root = resolve(guard.root);
         const suffix = relative(root, portFile);
-        if (!suffix || suffix === ".." || suffix.startsWith(`..${sep}`) || isAbsolute(suffix)) return null;
+        if (!suffix || suffix === ".." || suffix.startsWith(`..${sep}`) || isAbsolute(suffix)) return deferred();
         const ancestors: Array<{ path: string; stat: BigIntStats; canonical: string }> = [];
         const missing: string[] = [];
         for (let path = dirname(portFile); ; path = dirname(path)) {
             try {
                 const stat = lstatSync(path, { bigint: true });
-                if (!stat.isDirectory() || stat.isSymbolicLink() || (process.getuid && (stat.uid !== BigInt(process.getuid()) || (stat.mode & 0o022n) !== 0n))) return null;
+                if (!stat.isDirectory() || stat.isSymbolicLink() || (process.getuid && (stat.uid !== BigInt(process.getuid()) || (stat.mode & 0o022n) !== 0n))) return deferred();
                 ancestors.push({ path, stat, canonical: realpathSync(path) });
             } catch (error) {
-                if ((error as NodeJS.ErrnoException).code !== "ENOENT") return null;
+                if ((error as NodeJS.ErrnoException).code !== "ENOENT") return deferred();
                 missing.push(path);
             }
             if (path === root) break;
-            if (dirname(path) === path) return null;
+            if (dirname(path) === path) return deferred();
         }
         const expected = capturePortFile(portFile);
         if (!expected) {
-            try { lstatSync(portFile); return null; }
-            catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") return null; }
-        } else if (!decodePortFile(expected)) return null;
+            try { lstatSync(portFile); return deferred(); }
+            catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") return deferred(); }
+        } else if (!decodePortFile(expected)) return deferred();
         const assertParents = () => {
             assertRuntimeBindAuthorityCurrent(guard, snapshot);
             for (const before of ancestors) {
@@ -1723,7 +1727,7 @@ function preparePortPublication(portFile: string, guard: RuntimeBindGuard): Clip
             // port inode. Scan that existing inode so ancestor mounts and unknown
             // runtime history still veto creation without treating every sibling
             // file bind as an overlapping mount.
-            if (snapshot.coverage !== "complete" || snapshot.pending || missing.length !== 0) return null;
+            if (snapshot.coverage !== "complete" || snapshot.pending || missing.length !== 0) return deferred();
             assertCurrent();
             const stage = join(dirname(portFile), `.${basename(portFile)}.${randomBytes(16).toString("hex")}.pending`);
             const fd = openSync(stage, constants.O_RDWR | constants.O_CREAT | constants.O_EXCL
@@ -1754,8 +1758,9 @@ function preparePortPublication(portFile: string, guard: RuntimeBindGuard): Clip
                 finally { closed = true; closeSync(fd); }
             };
             try {
-                if (!receipt || !sameOwned(owned) || owned.nlink !== 1n || !stageMatches()
-                    || clipboardPortMayHaveBindUsers(stage, guard)) { dispose(); return null; }
+                if (!receipt || !sameOwned(owned) || owned.nlink !== 1n || !stageMatches()) { dispose(); return deferred(); }
+                const admission = clipboardPortBindAdmission(stage, guard);
+                if (!admission.allowed) { dispose(); return deferred(admission.reason); }
                 assertCurrent();
                 const publish: ClipboardPublication = record => {
                     if (closed || settled) throw new Error("Clipboard publication has already settled");
@@ -1791,14 +1796,16 @@ function preparePortPublication(portFile: string, guard: RuntimeBindGuard): Clip
                     return publicationReceipt(portFile, committed);
                 };
                 publish.dispose = dispose;
-                return publish;
-            } catch { dispose(); return null; }
+                return { kind: "ready", publish };
+            } catch { dispose(); return deferred(); }
         }
         const scope = expected ? portFile : ancestors[0]?.path;
-        if (!scope || clipboardPortMayHaveBindUsers(scope, guard)) return null;
+        if (!scope) return deferred();
+        const admission = clipboardPortBindAdmission(scope, guard);
+        if (!admission.allowed) return deferred(admission.reason);
         assertCurrent();
         let published = false;
-        return record => {
+        const publish: ClipboardPublication = record => {
             if (published) throw new Error("Clipboard publication has already settled");
             published = true;
             assertCurrent();
@@ -1824,7 +1831,8 @@ function preparePortPublication(portFile: string, guard: RuntimeBindGuard): Clip
                 return publicationReceipt(portFile, committed);
             } finally { closeSync(fd); }
         };
-    } catch { return null; }
+        return { kind: "ready", publish };
+    } catch { return deferred(); }
 }
 
 interface PublishedClipboardReceipt {
@@ -2087,11 +2095,28 @@ function createNativeClipboardLifecycle(publicationPath = currentClipboardPortFi
             return runWithNativeRuntimeInvocation(invocation, () => withRuntimeBindGuardAsync(homePreparation ?? cccHome(), operation));
         },
         hasOtherSessions: (requester?: SessionOwnershipReceipt) => hasAnyActiveSessionsExcept(requester ?? null),
+        observeOtherSessions: (requester?: SessionOwnershipReceipt) => observeClipboardSessionPresence(requester ?? null),
         portMayHaveBindUsers: clipboardPortMayHaveBindUsers,
         preparePublication: preparePortPublication,
         markRetired: markPortRetired,
-        warnUpgradeDeferred: () => {
-            console.warn("[ccc] Clipboard update deferred: shared session, bind, or writer ownership could not be excluded. Keeping the authenticated existing bridge.");
+        warnUpgradeDeferred: ({ reason, existingBridgeAvailable }) => {
+            const reasons: Record<ClipboardUpgradeDeferralReason, string> = {
+                "session-active": "another CCC session is still running",
+                "session-unknown": "another session's process state could not be verified",
+                "history-unknown": "runtime bind history could not be read or verified",
+                "coverage-incomplete": "runtime bind history does not cover all previous containers",
+                "creation-pending": "a previous container creation has not been reconciled",
+                "bind-present": "a container retains a mount of the clipboard state",
+                "bind-unknown": "container mounts could not be inspected completely",
+                "publication-unverified": "the clipboard state files could not be verified for publication",
+                "writer-unavailable": "the previous clipboard server did not authenticate or respond",
+                "writer-unsupported": "the previous clipboard server cannot confirm shutdown",
+                "writer-changed": "the previous clipboard server record changed",
+                "writer-shutdown-failed": "the previous clipboard server did not confirm shutdown",
+            };
+            console.warn(existingBridgeAvailable
+                ? `[ccc] Clipboard update deferred (${reason}): ${reasons[reason]}. Keeping the authenticated existing bridge.`
+                : `[ccc] Clipboard unavailable (${reason}): ${reasons[reason]}. No authenticated existing bridge is available.`);
             return undefined;
         },
         now: () => performance.now(),
@@ -2118,29 +2143,30 @@ export function retireClipboardServerFromPortFile(portFile: string): Promise<voi
 /**
  * Check if there are any active CCC sessions besides the given lock file.
  */
-export function hasAnyActiveSessionsExcept(currentLockFile: string | SessionOwnershipReceipt | null, directory: string = locksDir()): boolean {
+export function observeClipboardSessionPresence(currentLockFile: string | SessionOwnershipReceipt | null, directory: string = locksDir()): ClipboardSessionPresence {
     const requester = typeof currentLockFile === "object" && currentLockFile !== null ? currentLockFile : null;
     let locks: string[];
     try {
         locks = readdirSync(directory).filter((f) => f.endsWith(".lock"));
     } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
-        // Failure to enumerate locks is not proof that no sessions exist.
-        return true;
+        return (error as NodeJS.ErrnoException).code === "ENOENT" ? "absent" : "unknown";
     }
-    return locks.some((f) => {
-        const lockPath = join(directory, f);
-        if (requester && requester.ownerPid === process.pid && requester.path === lockPath && nativeSessionOwnershipMatches(requester)) return false;
-        // Unknown, replaced and nonregular claims veto a shared mutation.
+    let unknown = false;
+    for (const name of locks) {
+        const lockPath = join(directory, name);
+        if (requester && requester.ownerPid === process.pid && requester.path === lockPath && nativeSessionOwnershipMatches(requester)) continue;
         try {
             const receipt = captureNativeSessionOwnership(lockPath);
             const liveness = sessionLockLiveness(Buffer.from(receipt.bytes, "base64").toString("utf8"));
-            return liveness !== "stale";
-        } catch {
-            // A read failure is not proof that the owning session exited.
-            return true;
-        }
-    });
+            if (liveness === "active") return "active";
+            if (liveness === "unknown") unknown = true;
+        } catch { unknown = true; }
+    }
+    return unknown ? "unknown" : "absent";
+}
+
+export function hasAnyActiveSessionsExcept(currentLockFile: string | SessionOwnershipReceipt | null, directory: string = locksDir()): boolean {
+    return observeClipboardSessionPresence(currentLockFile, directory) !== "absent";
 }
 
 // === Standalone Entry Point ===

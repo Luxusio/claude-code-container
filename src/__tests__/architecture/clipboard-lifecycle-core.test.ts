@@ -1,9 +1,10 @@
 import {describe, expect, it} from "vitest";
 import {createClipboardServerLifecycle} from "../../application/clipboard/server-lifecycle.js";
-import type {ClipboardHealthResult, ClipboardPortRecord} from "../../domain/clipboard/server-lifecycle.js";
+import type {ClipboardHealthResult, ClipboardPortRecord, ClipboardUpgradeDeferral} from "../../domain/clipboard/server-lifecycle.js";
 import type {ClipboardServerLifecyclePorts} from "../../ports/clipboard/server-lifecycle.js";
 
 function fixture(generation?: string) {
+    const deferrals: ClipboardUpgradeDeferral[] = [];
     const calls: unknown[] = [], lock = {owner: "startup"}, child = {owner: "daemon"}, guard = {owner: "global"};
     const requester = {claim: "this requester"};
     let held = false, now = 0, record: ClipboardPortRecord | null = null;
@@ -32,9 +33,11 @@ function fixture(generation?: string) {
         portMayHaveBindUsers: (path, value) => { assertHeld(); calls.push(["bind-users", path, value]); return bindUsers; },
         preparePublication: (path, value) => {
             assertHeld(); calls.push(["prepare-publication", path, value]);
-            return publicationAllowed && !bindUsers ? next => { assertHeld(); calls.push(["publish", next]); record = next; } : null;
+            return publicationAllowed && !bindUsers
+                ? {kind: "ready", publish: (next: ClipboardPortRecord) => { assertHeld(); calls.push(["publish", next]); record = next; }}
+                : {kind: "deferred", reason: bindUsers ? "bind-present" : "publication-unverified"};
         },
-        warnUpgradeDeferred: () => { calls.push("deferred"); return undefined; },
+        warnUpgradeDeferred: detail => { calls.push("deferred"); deferrals.push(detail); return undefined; },
         now: () => now, sleep: async milliseconds => { calls.push(["sleep", milliseconds]); now += milliseconds; },
         daemonScriptPath: () => "/private/clipboard-server.js",
         launchDaemon: async (script, publish) => {
@@ -44,7 +47,7 @@ function fixture(generation?: string) {
         },
         unrefDaemon: value => { calls.push(["unref", value]); return undefined; },
     };
-    return {calls, ports, guard, lock, child, requester, app: createClipboardServerLifecycle(ports, version),
+    return {calls, deferrals, ports, guard, lock, child, requester, app: createClipboardServerLifecycle(ports, version),
         setRecord: (value: ClipboardPortRecord | null) => { record = value; },
         setHealth: (value: ClipboardHealthResult) => { health = value; },
         setOtherSessions: (value: boolean) => { otherSessions = value; },
@@ -59,6 +62,50 @@ function effects(calls: readonly unknown[]): string[] {
 }
 
 describe("Clipboard lifecycle admission policy", () => {
+    it.each(["active", "unknown"] as const)("distinguishes an observed %s session while preserving its authenticated bridge", async presence => {
+        const f = fixture(); f.setRecord({port: 9, token: "old"});
+        f.setHealth({alive: true, version: "old", retirement: "writer-settlement-v1"});
+        f.ports.observeOtherSessions = () => presence;
+        expect(await f.app.ensureClipboardSelection()).toEqual({port: 9, token: "old", portFile: "/private/port"});
+        expect(f.deferrals).toEqual([{reason: presence === "active" ? "session-active" : "session-unknown", existingBridgeAvailable: true}]);
+        expect(effects(f.calls)).toEqual([]);
+    });
+    it.each(["history-unknown", "coverage-incomplete", "creation-pending", "bind-present", "bind-unknown", "publication-unverified"] as const)(
+        "preserves the native %s reason and reports an unavailable rather than imaginary fallback", async reason => {
+            const f = fixture();
+            f.ports.preparePublication = () => ({kind: "deferred", reason});
+            expect(await f.app.ensureClipboardSelection()).toBeNull();
+            expect(f.deferrals).toEqual([{reason, existingBridgeAvailable: false}]);
+            await expect(f.app.ensureClipboardServer()).rejects.toThrow(`Clipboard unavailable (${reason}).`);
+            expect(effects(f.calls)).toEqual([]);
+        },
+    );
+    it("keeps a verified old bridge when native history prevents a new publication", async () => {
+        const f = fixture(); f.setRecord({port: 9, token: "old"});
+        f.setHealth({alive: true, version: "old", retirement: "writer-settlement-v1"});
+        f.ports.preparePublication = () => ({kind: "deferred", reason: "history-unknown"});
+        expect(await f.app.ensureClipboardServer()).toBe(9);
+        expect(f.deferrals).toEqual([{reason: "history-unknown", existingBridgeAvailable: true}]);
+        expect(effects(f.calls)).toEqual([]);
+    });
+    it.each(["writer-unavailable", "writer-unsupported", "writer-changed"] as const)("reports %s without replacing an unsettled writer", async reason => {
+        const f = fixture(); f.setRecord({port: 9, token: "old"});
+        f.setHealth({alive: reason !== "writer-unavailable", version: "old", ...(reason === "writer-changed" ? {retirement: "writer-settlement-v1" as const} : {})});
+        if (reason === "writer-changed") f.ports.portRecordMatches = () => false;
+        const result = await f.app.ensureClipboardSelection();
+        expect(result !== null).toBe(reason === "writer-unsupported");
+        expect(f.deferrals).toEqual([{reason, existingBridgeAvailable: reason === "writer-unsupported"}]);
+        expect(effects(f.calls)).toEqual([]);
+    });
+    it.each([true, false])("rechecks fallback health after a failed shutdown (still alive=%s)", async alive => {
+        const f = fixture(); f.setRecord({port: 9, token: "old"});
+        f.setHealth({alive: true, version: "old", retirement: "writer-settlement-v1"});
+        f.ports.requestShutdown = async () => { f.setHealth({alive, version: "old"}); return false; };
+        const selected = await f.app.ensureClipboardSelection();
+        expect(selected !== null).toBe(alive);
+        expect(f.deferrals).toEqual([{reason: "writer-shutdown-failed", existingBridgeAvailable: alive}]);
+        expect(effects(f.calls)).toEqual([]);
+    });
     it("publishes a fresh admitted generation alongside other live sessions without retiring their service", async () => {
         const generation = "0123456789ab", f = fixture(generation);
         f.setOtherSessions(true);
@@ -102,11 +149,12 @@ describe("Clipboard lifecycle admission policy", () => {
         const f = fixture("0123456789ab");
         const prepare = f.ports.preparePublication;
         f.ports.preparePublication = (path, guard) => {
-            const publication = prepare(path, guard)!;
-            return Object.assign(publication, {dispose: () => {
+            const prepared = prepare(path, guard);
+            if (prepared.kind !== "ready") throw new Error("fixture publication unavailable");
+            return {kind: "ready", publish: Object.assign(prepared.publish, {dispose: () => {
                 expect(f.calls.at(-1)).not.toBe("global-exit");
                 f.calls.push("dispose-publication");
-            }});
+            }})};
         };
         if (outcome === "launch-error") f.ports.launchDaemon = async () => { throw new Error("owned daemon launch rejected"); };
         if (outcome === "published") expect(await f.app.ensureClipboardSelection()).toMatchObject({generation: "0123456789ab"});
@@ -219,7 +267,7 @@ describe("Clipboard lifecycle admission policy", () => {
     });
     it("does not publish after the native publication receipt loses its target", async () => {
         const f = fixture(), displaced = new Error("port target changed");
-        f.ports.preparePublication = () => () => { throw displaced; };
+        f.ports.preparePublication = () => ({kind: "ready", publish: () => { throw displaced; }});
         await expect(f.app.ensureClipboardSelection()).rejects.toBe(displaced);
         expect(f.calls.some(call => Array.isArray(call) && call[0] === "publish")).toBe(false); expect(f.calls.at(-1)).toEqual(["release", f.lock]);
     });

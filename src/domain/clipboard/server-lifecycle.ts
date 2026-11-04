@@ -1,6 +1,16 @@
 export interface ClipboardPortRecord { port: number; token: string; readonly retired?: true }
 export interface ClipboardSelection extends ClipboardPortRecord { readonly portFile: string; readonly generation?: string }
 export interface ClipboardHealthResult { alive: boolean; version?: string; retirement?: "writer-settlement-v1" }
+
+export type ClipboardSessionPresence = "active" | "absent" | "unknown";
+export type ClipboardUpgradeDeferralReason =
+    | "history-unknown" | "coverage-incomplete" | "creation-pending" | "bind-present" | "bind-unknown"
+    | "session-active" | "session-unknown" | "publication-unverified"
+    | "writer-unavailable" | "writer-unsupported" | "writer-changed" | "writer-shutdown-failed";
+export interface ClipboardUpgradeDeferral {
+    readonly reason: ClipboardUpgradeDeferralReason;
+    readonly existingBridgeAvailable: boolean;
+}
 export const CLIPBOARD_SERVER_ORPHAN_GRACE_MS = 15000;
 export const HEALTH_CHECK_TIMEOUT_MS = 2000;
 export const STARTUP_POLL_INTERVAL_MS = 100;

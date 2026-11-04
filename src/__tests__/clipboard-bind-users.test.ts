@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { clipboardPortMayHaveBindUsers } from "../clipboard-bind-users.js";
+import { clipboardPortBindAdmission, clipboardPortMayHaveBindUsers } from "../clipboard-bind-users.js";
 import { validateNativeRuntimeInvocation } from "../adapters/container-runtime-invocation.js";
 import { beginRuntimeBindCreation, prepareRuntimeBindHome, recordRuntimeBindAuthority, withRuntimeBindGuard } from "../adapters/runtime-bind-authority.js";
 import { NATIVE_RUNTIME_SELECTOR_KEYS } from "../ports/container-runtime-invocation.js";
@@ -55,6 +55,33 @@ beforeEach(() => {
 afterEach(() => { vi.restoreAllMocks(); rmSync(fixture, { recursive: true, force: true }); });
 
 describe("clipboard bind users under complete retained runtime authority", () => {
+    it.each(["clear", "history-unknown", "coverage-incomplete", "creation-pending", "bind-present", "bind-unknown"] as const)(
+        "reports %s from actual retained history and native inventory without changing either publication",
+        reason => {
+            const history = join(root, "runtime-bind-authority", "history.json");
+            if (reason === "history-unknown") writeFileSync(history, "invalid history", { mode: 0o600 });
+            if (reason === "coverage-incomplete") writeFileSync(join(root, "runtime-bind-authority", "receiving-host-incomplete"), "", { flag: "wx", mode: 0o600 });
+            if (reason === "creation-pending") withRuntimeBindGuard(home, guard => beginRuntimeBindCreation(guard, invocation()));
+            if (reason === "bind-present") mounts(port, false);
+            else mocks.spawn.mockReturnValue(result("", reason === "bind-unknown" ? 1 : 0));
+            const retained = [readFileSync(history), readFileSync(port)];
+
+            expect(withRuntimeBindGuard(home, guard => clipboardPortBindAdmission(port, guard)))
+                .toEqual({ allowed: reason === "clear", reason });
+
+            expect([readFileSync(history), readFileSync(port)]).toEqual(retained);
+            if (["history-unknown", "coverage-incomplete", "creation-pending"].includes(reason)) {
+                expect(mocks.spawn).not.toHaveBeenCalled();
+            }
+        },
+    );
+    it("reports unqualified or expired authority as unknown rather than an observed bind user", () => {
+        expect(clipboardPortBindAdmission(port)).toEqual({ allowed: false, reason: "history-unknown" });
+        let expired!: RuntimeBindGuard;
+        withRuntimeBindGuard(home, guard => { expired = guard; });
+        expect(clipboardPortBindAdmission(port, expired)).toEqual({ allowed: false, reason: "history-unknown" });
+        expect(mocks.spawn).not.toHaveBeenCalled();
+    });
     it("includes running background containers without requiring session records or labels", () => {
         mounts(port);
         expect(query()).toBe(true);

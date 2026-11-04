@@ -20,7 +20,7 @@ function compileContracts(ports: ClipboardServerLifecyclePorts<{ lock: true }, {
     const current: ClipboardSelection = {...legacy, generation: "0123456789ab"};
     const plainPublication: ClipboardPublication = () => undefined;
     const ownedPublication: ClipboardPublication = Object.assign(plainPublication, {dispose: () => {}});
-    const generationPorts: typeof ports = {...ports, generation: "0123456789ab", preparePublication: () => ownedPublication};
+    const generationPorts: typeof ports = {...ports, generation: "0123456789ab", preparePublication: () => ({kind: "ready", publish: ownedPublication})};
     void [legacy, current, generationPorts];
     // @ts-expect-error Generation identifiers are strings, never a numeric policy guess.
     const invalidSelection: ClipboardSelection = {...legacy, generation: 12}; void invalidSelection;

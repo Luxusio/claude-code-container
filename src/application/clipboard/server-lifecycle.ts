@@ -1,6 +1,7 @@
 import {
     STARTUP_LOCK_TIMEOUT_MS, STARTUP_POLL_INTERVAL_MS, STARTUP_POLL_TIMEOUT_MS,
     type ClipboardPortRecord, type ClipboardSelection, type ClipboardHealthResult,
+    type ClipboardSessionPresence, type ClipboardUpgradeDeferral, type ClipboardUpgradeDeferralReason,
 } from "../../domain/clipboard/server-lifecycle.js";
 import type { ClipboardServerLifecyclePorts } from "../../ports/clipboard/server-lifecycle.js";
 
@@ -11,7 +12,12 @@ export function createClipboardServerLifecycle<Lock, Child, Guard, Requester>(
     const generation = ports.generation === serverVersion && /^[a-f0-9]{12}$/.test(serverVersion) ? serverVersion : undefined;
     const selection = (record: ClipboardPortRecord, portFile = ports.portFilePath(), current = false): ClipboardSelection =>
         Object.freeze({ ...record, portFile, ...(current && generation ? { generation } : {}) });
-    async function ensureClipboardSelection(requester?: Requester): Promise<ClipboardSelection | null> {
+    const sessionPresence = (requester?: Requester): ClipboardSessionPresence =>
+        ports.observeOtherSessions?.(requester) ?? (ports.hasOtherSessions(requester) ? "unknown" : "absent");
+    const sessionReason = (presence: ClipboardSessionPresence): "session-active" | "session-unknown" =>
+        presence === "active" ? "session-active" : "session-unknown";
+    async function selectClipboard(requester?: Requester,
+        onDeferred?: (detail: ClipboardUpgradeDeferral) => void): Promise<ClipboardSelection | null> {
         const bindAddr = "127.0.0.1";
         const existing = ports.readPortFile();
         if (existing && !existing.retired) {
@@ -45,35 +51,56 @@ export function createClipboardServerLifecycle<Lock, Child, Guard, Requester>(
             return await ports.withGlobalGuard(async guard => {
                 const path = ports.portFilePath();
                 const current = ports.readPortFile(path);
-                const health: ClipboardHealthResult = current && !current.retired ? await ports.checkHealth(current.port, current.token, bindAddr) : { alive: false };
-                if (current && !ports.portRecordMatches(current, path)) return null;
-                if (current && !current.retired && health.alive && health.version === serverVersion) return selection(current, path, true);
-                const defer = () => {
-                    ports.warnUpgradeDeferred();
-                    return current && !current.retired && health.alive ? selection(current, path) : null;
+                let health: ClipboardHealthResult = current && !current.retired ? await ports.checkHealth(current.port, current.token, bindAddr) : { alive: false };
+                let retired = current?.retired === true;
+                const defer = (reason: ClipboardUpgradeDeferralReason, mayReuse = true) => {
+                    const available = !!(mayReuse && current && !retired && health.alive && ports.portRecordMatches(current, path));
+                    const detail: ClipboardUpgradeDeferral = { reason, existingBridgeAvailable: available };
+                    ports.warnUpgradeDeferred(detail);
+                    onDeferred?.(detail);
+                    return available ? selection(current!, path) : null;
                 };
+                if (current && !ports.portRecordMatches(current, path)) return defer("writer-changed", false);
+                if (current && !retired && health.alive && health.version === serverVersion) return selection(current, path, true);
                 // Only native admission of a fresh, disjoint generation can coexist
                 // with other sessions. Existing writers retain every original veto.
                 const concurrentCreation = !!generation && current === null;
-                if (!concurrentCreation && ports.hasOtherSessions(requester)) return defer();
-                let publish = ports.preparePublication(path, guard);
-                if (!publish) return defer();
+                let presence = concurrentCreation ? "absent" as const : sessionPresence(requester);
+                if (presence !== "absent") return defer(sessionReason(presence));
+                let prepared = ports.preparePublication(path, guard);
+                if (prepared.kind === "deferred") return defer(prepared.reason);
+                let publish = prepared.publish;
                 try {
-                    if (current && !current.retired) {
+                    if (current && !retired) {
                         // Silence and a legacy HTTP 200 do not settle a previous writer.
-                        if (!health.alive || health.retirement !== "writer-settlement-v1" || !ports.portRecordMatches(current, path)
-                            || ports.hasOtherSessions(requester)) return defer();
-                        if (!await ports.requestShutdown(current.port, current.token)) return defer();
+                        if (!health.alive) return defer("writer-unavailable", false);
+                        if (health.retirement !== "writer-settlement-v1") return defer("writer-unsupported");
+                        if (!ports.portRecordMatches(current, path)) return defer("writer-changed", false);
+                        presence = sessionPresence(requester);
+                        if (presence !== "absent") return defer(sessionReason(presence));
+                        let settled = false;
+                        try { settled = await ports.requestShutdown(current.port, current.token); }
+                        catch { /* Only authenticated health can establish a usable fallback after failed shutdown. */ }
+                        if (!settled) {
+                            try { health = await ports.checkHealth(current.port, current.token, bindAddr); }
+                            catch { health = { alive: false }; }
+                            return defer("writer-shutdown-failed");
+                        }
                         ports.markRetired(current, path, guard);
-                        if (ports.hasOtherSessions(requester)) return null;
+                        retired = true;
+                        presence = sessionPresence(requester);
+                        if (presence !== "absent") return defer(sessionReason(presence), false);
                         publish.dispose?.();
-                        publish = ports.preparePublication(path, guard);
-                        if (!publish) return null;
+                        prepared = ports.preparePublication(path, guard);
+                        if (prepared.kind === "deferred") return defer(prepared.reason, false);
+                        publish = prepared.publish;
                     }
-                    if (!concurrentCreation && ports.hasOtherSessions(requester)) return null;
+                    presence = concurrentCreation ? "absent" : sessionPresence(requester);
+                    if (presence !== "absent") return defer(sessionReason(presence));
                     const publishRecord = publish;
                     const child = await ports.launchDaemon(ports.daemonScriptPath(), record => {
-                        if (!concurrentCreation && ports.hasOtherSessions(requester)) throw new Error("Clipboard session ownership changed before publication");
+                        const presence = concurrentCreation ? "absent" : sessionPresence(requester);
+                        if (presence !== "absent") throw new Error(`Clipboard session ownership changed before publication (${sessionReason(presence)})`);
                         return publishRecord(record);
                     });
                     ports.unrefDaemon(child);
@@ -95,9 +122,13 @@ export function createClipboardServerLifecycle<Lock, Child, Guard, Requester>(
             ports.releaseStartupLock(lock);
         }
     }
+    async function ensureClipboardSelection(requester?: Requester): Promise<ClipboardSelection | null> {
+        return selectClipboard(requester);
+    }
     async function ensureClipboardServer(requester?: Requester): Promise<number> {
-        const selected = await ensureClipboardSelection(requester);
-        if (!selected) throw new Error("Clipboard publication deferred because shared ownership could not be excluded");
+        let reason: ClipboardUpgradeDeferralReason = "publication-unverified";
+        const selected = await selectClipboard(requester, detail => { reason = detail.reason; });
+        if (!selected) throw new Error(`Clipboard unavailable (${reason}).`);
         return selected.port;
     }
     async function retireClipboardServerFromPortFile(portFile: string): Promise<void> {

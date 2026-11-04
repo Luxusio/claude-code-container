@@ -15,7 +15,10 @@ const nativeWindowsHost = process.platform === "win32";
 
 // Bind-user inspection is exercised with real daemon descriptors in clipboard-state
 // and runtime metadata cases in clipboard-bind-users.test.ts.
-vi.mock("../clipboard-bind-users.js", () => ({ clipboardPortMayHaveBindUsers: () => false }));
+vi.mock("../clipboard-bind-users.js", () => ({
+    clipboardPortMayHaveBindUsers: () => false,
+    clipboardPortBindAdmission: () => ({ allowed: true, reason: "clear" }),
+}));
 // Application order is covered separately with real claims and native files.
 // This HTTP/clipboard owner isolates that boundary without opening a host root.
 vi.mock("../adapters/runtime-bind-authority.js", () => ({
@@ -3261,6 +3264,7 @@ describe("clipboard-server", () => {
             });
             const result = mod.hasAnyActiveSessionsExcept(null);
             expect(result).toBe(false);
+            expect(mod.observeClipboardSessionPresence(null)).toBe("absent");
         });
 
         it("returns false when no lock files exist", async () => {
@@ -3280,6 +3284,7 @@ describe("clipboard-server", () => {
             });
 
             expect(mod.hasAnyActiveSessionsExcept(null)).toBe(true);
+            expect(mod.observeClipboardSessionPresence(null)).toBe("unknown");
             expect(mockUnlinkSync).not.toHaveBeenCalled();
         });
 
@@ -3370,6 +3375,34 @@ describe("clipboard-server", () => {
             actual.writeFileSync(join(portBacking.root, "stale.lock"), String(deadPid), {mode: 0o600});
             const result = mod.hasAnyActiveSessionsExcept(null, portBacking.root);
             expect(result).toBe(false);
+            expect(mod.observeClipboardSessionPresence(null, portBacking.root)).toBe("absent");
+            expect(mockUnlinkSync).not.toHaveBeenCalled();
+        });
+
+        it.each([false, true])("reports an actual live owner despite an unreadable peer appearing first=%s", async unknownFirst => {
+            const actual = await vi.importActual<typeof import("fs")>("fs");
+            const alive = join(portBacking.root, "alive.lock"), malformed = join(portBacking.root, "malformed.lock");
+            actual.writeFileSync(alive, String(process.pid), { mode: 0o600 });
+            actual.writeFileSync(malformed, "unreadable-owner", { mode: 0o600 });
+            mockReaddirSync.mockReturnValue(unknownFirst ? ["malformed.lock", "alive.lock"] : ["alive.lock", "malformed.lock"]);
+            if (nativeWindowsHost) mockSpawnSync.mockReturnValue({ status: 0, stdout: "FOUND:12345\n", stderr: "" });
+
+            expect(mod.observeClipboardSessionPresence(null, portBacking.root)).toBe("active");
+            expect(mod.hasAnyActiveSessionsExcept(null, portBacking.root)).toBe(true);
+            expect(actual.readFileSync(alive, "utf8")).toBe(String(process.pid));
+            expect(actual.readFileSync(malformed, "utf8")).toBe("unreadable-owner");
+            expect(mockUnlinkSync).not.toHaveBeenCalled();
+        });
+
+        it("reports malformed current evidence as unknown without calling it a live session", async () => {
+            const actual = await vi.importActual<typeof import("fs")>("fs");
+            const malformed = join(portBacking.root, "malformed.lock");
+            actual.writeFileSync(malformed, "unreadable-owner", { mode: 0o600 });
+            mockReaddirSync.mockReturnValue(["malformed.lock"]);
+
+            expect(mod.observeClipboardSessionPresence(null, portBacking.root)).toBe("unknown");
+            expect(mod.hasAnyActiveSessionsExcept(null, portBacking.root)).toBe(true);
+            expect(actual.readFileSync(malformed, "utf8")).toBe("unreadable-owner");
             expect(mockUnlinkSync).not.toHaveBeenCalled();
         });
 
@@ -3531,7 +3564,7 @@ describe("clipboard-server", () => {
 
             // The real ensureClipboardServer polls for STARTUP_POLL_TIMEOUT_MS (5000ms).
             // We can't wait that long. Instead, verify it throws with the expected message.
-            await expect(mod.ensureClipboardServer()).rejects.toThrow("Clipboard publication deferred");
+            await expect(mod.ensureClipboardServer()).rejects.toThrow("Clipboard unavailable (publication-unverified)");
             expect(mockSpawn).not.toHaveBeenCalled();
         }, 15000);
 
@@ -3555,7 +3588,7 @@ describe("clipboard-server", () => {
             mockSpawn.mockReturnValue(mockChild);
 
             // Dead server on port 9999 — health check will fail → start new → timeout
-            await expect(mod.ensureClipboardServer()).rejects.toThrow("Clipboard publication deferred");
+            await expect(mod.ensureClipboardServer()).rejects.toThrow("Clipboard unavailable (session-unknown)");
             expect(mockSpawn).not.toHaveBeenCalled(); expect(mockUnlinkSync).not.toHaveBeenCalledWith(PORT_FILE);
         }, 15000);
     });

@@ -10,7 +10,9 @@ import { spawnSync } from "child_process";
 
 const native = vi.hoisted(() => ({
     sourceRoot: "", home: "", contents: new Map<string, string>(), reads: [] as string[],
-    failingRead: "", bindUsers: false, spawn: vi.fn(),
+    failingRead: "", bindUsers: false,
+    bindReason: null as "history-unknown" | "coverage-incomplete" | "creation-pending" | "bind-present" | "bind-unknown" | null,
+    spawn: vi.fn(),
 }));
 vi.mock("fs", async () => {
     const actual = await vi.importActual<typeof import("fs")>("fs");
@@ -37,7 +39,12 @@ vi.mock("../../container-runtime.js", async original => {
     });
     return { ...actual, getRuntimeInvocation: () => invocation, peekRuntimeInvocation: () => invocation };
 });
-vi.mock("../../clipboard-bind-users.js", () => ({ clipboardPortMayHaveBindUsers: () => native.bindUsers }));
+vi.mock("../../clipboard-bind-users.js", () => ({
+    clipboardPortMayHaveBindUsers: () => native.bindUsers || native.bindReason !== null,
+    clipboardPortBindAdmission: () => native.bindReason !== null || native.bindUsers
+        ? { allowed: false, reason: native.bindReason ?? "bind-unknown" }
+        : { allowed: true, reason: "clear" },
+}));
 vi.mock("../../clipboard-startup-lock.js", () => ({
     tryAcquireClipboardStartupLock: () => ({ path: "private-startup-lock", fd: 1 }),
     recoverDeadClipboardStartupLock: () => false,
@@ -79,6 +86,7 @@ beforeEach(() => {
     native.reads = [];
     native.failingRead = "";
     native.bindUsers = false;
+    native.bindReason = null;
     native.spawn.mockImplementation(() => { throw new Error("Unexpected native daemon launch"); });
     vi.spyOn(console, "warn").mockImplementation(() => {});
 });
@@ -129,6 +137,11 @@ async function load() {
 async function reload() {
     vi.resetModules();
     return load();
+}
+async function admitFreshHome() {
+    const { prepareRuntimeBindHome, withRuntimeBindGuard } = await import("../../adapters/runtime-bind-authority.js");
+    const prepared = prepareRuntimeBindHome(join(native.home, ".ccc"));
+    withRuntimeBindGuard(prepared, () => {});
 }
 function publish(port: number, token: string, generation?: string) {
     const directory = join(native.home, ".ccc", "run");
@@ -227,15 +240,17 @@ describe("fixed compiled Clipboard policy fingerprint", () => {
         publish(instance.port, instance.token, instance.version);
         expect(await instance.mod.ensureClipboardServer()).toBe(instance.port);
         expect(native.spawn).not.toHaveBeenCalled();
+        expect(console.warn).not.toHaveBeenCalled();
     });
 
-    it("defers a mutated policy upgrade when native bind-user observations are uncertain", async () => {
+    it.each(["history-unknown", "coverage-incomplete", "creation-pending", "bind-present", "bind-unknown"] as const)("reports %s while retaining the authenticated existing bridge", async reason => {
+        await admitFreshHome();
         const previousVersion = expectedVersion();
         native.contents.set(files[4], "changed snapshot policy");
         const peer = await oldPeer(previousVersion, false, expectedVersion());
         const before = statSync(peer.portFile);
         const bytes = readFileSync(peer.portFile, "utf8");
-        native.bindUsers = true;
+        native.bindReason = reason;
         const instance = await load();
         expect(await instance.mod.ensureClipboardServer()).toBe(peer.port);
         expect(peer.calls.filter(call => call.path === "/shutdown")).toEqual([]);
@@ -243,7 +258,60 @@ describe("fixed compiled Clipboard policy fingerprint", () => {
         expect(readFileSync(peer.portFile, "utf8")).toBe(bytes);
         expect(statSync(peer.portFile).ino).toBe(before.ino);
         expect(native.spawn).not.toHaveBeenCalled();
-        expect(console.warn).toHaveBeenCalledWith(expect.stringContaining("Clipboard update deferred"));
+        expect(console.warn).toHaveBeenCalledWith(expect.stringContaining(`Clipboard update deferred (${reason}):`));
+        const warning = String(vi.mocked(console.warn).mock.calls.at(-1)?.[0]);
+        expect(warning).toContain("Keeping the authenticated existing bridge.");
+        expect(warning).not.toContain(peer.token);
+        expect(warning).not.toContain(native.home);
+    });
+
+    it("reports an unavailable bridge instead of claiming the dead endpoint was kept", async () => {
+        await admitFreshHome();
+        const previousVersion = expectedVersion();
+        native.contents.set(files[4], "changed snapshot policy");
+        const peer = await oldPeer(previousVersion, false, expectedVersion());
+        const bytes = readFileSync(peer.portFile, "utf8"), inode = statSync(peer.portFile).ino;
+        const deadServer = servers.at(-1)!;
+        deadServer.closeAllConnections();
+        await new Promise<void>(done => deadServer.close(() => done()));
+        native.bindReason = "bind-unknown";
+        const instance = await load();
+
+        await expect(instance.mod.ensureClipboardServer()).rejects.toThrow(/bind-unknown/);
+        const warning = String(vi.mocked(console.warn).mock.calls.at(-1)?.[0]);
+        expect(warning).toContain("Clipboard unavailable (bind-unknown):");
+        expect(warning).toContain("No authenticated existing bridge is available.");
+        expect(warning).not.toContain("Keeping");
+        expect(warning).not.toContain(peer.token);
+        expect(warning).not.toContain(native.home);
+        expect(readFileSync(peer.portFile, "utf8")).toBe(bytes);
+        expect(statSync(peer.portFile).ino).toBe(inode);
+        expect(native.spawn).not.toHaveBeenCalled();
+    });
+
+    it.each(["active", "unknown"] as const)("distinguishes %s session ownership before replacing an old writer", async state => {
+        const previousVersion = expectedVersion();
+        native.contents.set(files[4], "changed snapshot policy");
+        const peer = await oldPeer(previousVersion, false, expectedVersion());
+        const bytes = readFileSync(peer.portFile, "utf8"), inode = statSync(peer.portFile).ino;
+        const sessions = join(native.home, ".ccc", "run", "locks");
+        mkdirSync(sessions, { recursive: true, mode: 0o700 });
+        const owner = state === "active" ? String(process.pid) : "unreadable-owner";
+        const lock = join(sessions, "other-session.lock");
+        writeFileSync(lock, owner, { mode: 0o600 });
+        const instance = await load();
+
+        expect(await instance.mod.ensureClipboardServer()).toBe(peer.port);
+        const warning = String(vi.mocked(console.warn).mock.calls.at(-1)?.[0]);
+        expect(warning).toContain(`Clipboard update deferred (session-${state}):`);
+        expect(warning).toContain("Keeping the authenticated existing bridge.");
+        expect(warning).not.toContain(peer.token);
+        expect(warning).not.toContain(native.home);
+        expect(peer.calls.filter(call => call.path === "/shutdown")).toEqual([]);
+        expect(readFileSync(peer.portFile, "utf8")).toBe(bytes);
+        expect(statSync(peer.portFile).ino).toBe(inode);
+        expect(readFileSync(lock, "utf8")).toBe(owner);
+        expect(native.spawn).not.toHaveBeenCalled();
     });
 
     it("selects a separate current policy while an authenticated legacy service and another session remain live", async () => {
@@ -310,6 +378,7 @@ describe("fixed compiled Clipboard policy fingerprint", () => {
     }, 10000);
 
     it("authenticates retirement and publishes a new token for an upgraded policy", async () => {
+        await admitFreshHome();
         const previousVersion = expectedVersion();
         native.contents.set(files[5], "changed text write policy");
         const peer = await oldPeer(previousVersion, true, expectedVersion());
