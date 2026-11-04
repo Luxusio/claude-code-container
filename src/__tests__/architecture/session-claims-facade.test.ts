@@ -135,11 +135,14 @@ describe("session claims compatibility facade", () => {
         session.removeSessionLock(own);
     });
 
-    it("classifies only explicitly direct stale claims as inactive without deleting any query result", () => {
+    it("classifies every positively stale parent as inactive without deleting raw claims", () => {
         const direct = writeClaim("project--direct.lock", { version: 3, pid: 4242, startToken: null, ownershipKind: "direct" });
-        const legacy = writeClaim("project--legacy.lock", "4243"); effects.classify.mockReturnValue("stale");
-        expect(session.getActiveSessionsForContainer("project")).toEqual(["project--legacy.lock"]);
-        expect(existsSync(direct)).toBe(true); expect(readFileSync(legacy, "utf8")).toBe("4243");
+        const legacy = writeClaim("project--legacy.lock", "4243");
+        const monitored = writeClaim("project--monitored.lock", { version: 3, pid: 4244, startToken: "old-parent", ownershipKind: "monitored" });
+        effects.classify.mockReturnValue("stale");
+        expect(session.getActiveSessionsForContainer("project")).toEqual([]);
+        expect(session.getSessionLockClaimsForContainer("project").sort()).toEqual(["project--direct.lock", "project--legacy.lock", "project--monitored.lock"]);
+        expect([direct, legacy, monitored].map(existsSync)).toEqual([true, true, true]);
         expect(effects.spawn).not.toHaveBeenCalled();
     });
 
@@ -168,41 +171,22 @@ describe("scoped administrative claim reconciliation", () => {
     const reconcile = (inspectContainer: () => { known: boolean; containerId: string | null; running?: boolean }) =>
         session.withContainerLifecycleLock("project", () => session.getSessionLockClaimsForContainer("project", { projectPath: root, inspectContainer }));
 
-    it.each(["absent", "stopped"] as const)("retires a positively stale legacy file against a confirmed %s target before returning fresh claims", state => {
+    it.each(["absent", "stopped", "running", "unknown"] as const)("retires a positively stale legacy file without inspecting a %s target", state => {
         const legacy = writeClaim("project--legacy.lock", { version: 2, pid: 4242, startToken: "old-process" });
         effects.classify.mockReturnValue("stale");
-        const inspect = vi.fn(() => ({ known: true, containerId: state === "absent" ? null : containerId, running: false }));
+        const inspect = vi.fn(() => ({ known: state !== "unknown", containerId: state === "absent" ? null : containerId, running: state === "running" }));
         expect(reconcile(inspect)).toEqual([]);
-        expect(inspect).toHaveBeenCalled(); expect(existsSync(legacy)).toBe(false); expect(effects.spawn).not.toHaveBeenCalled();
-    });
-    it("observes the selected project inside its captured runtime and stops an orphan by exact ID", () => {
-        const legacy = writeClaim("project--legacy.lock", "4242"); effects.classify.mockReturnValue("stale");
-        const captured = runtimeFacade.getRuntimeInvocation(); let running = true;
-        const inspect = vi.fn(() => {
-            expect(held).toBe(true);
-            expect(runtimeFacade.currentNativeRuntimeInvocation()).toEqual(captured);
-            return { known: true, containerId, running };
-        });
-        effects.spawn.mockImplementation((_program: string, args: string[]) => {
-            if (args.includes("ps")) return { status: 0, stdout: `${containerId}\n`, stderr: "" };
-            expect(args.slice(-2)).toEqual(["stop", containerId]); running = false;
-            return { status: 0 };
-        });
-        expect(reconcile(inspect)).toEqual([]);
-        expect(existsSync(legacy)).toBe(false);
-        expect(effects.spawn.mock.calls.map(call => (call[1] as string[]).slice(-2)))
-            .toEqual([["-f", `id=${containerId}`], ["stop", containerId]]);
+        expect(inspect).not.toHaveBeenCalled(); expect(existsSync(legacy)).toBe(false); expect(effects.spawn).not.toHaveBeenCalled();
         expect(effects.cleanup).not.toHaveBeenCalled();
     });
-    it("returns the remaining partial record with a bounded diagnostic instead of falsely reporting it alive", () => {
+    it("revokes a stale main claim even when its historical runtime is malformed", () => {
         const legacy = writeClaim("project--legacy.lock", "4242"); effects.classify.mockReturnValue("stale");
         writeFileSync(`${legacy}.runtime.json`, JSON.stringify({ PRIVATE_SELECTOR: "not-for-logs" }), { mode: 0o600 });
         const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-        expect(reconcile(() => ({ known: true, containerId: null }))).toEqual(["project--legacy.lock"]);
-        expect(readFileSync(legacy, "utf8")).toBe("4242"); expect(effects.spawn).not.toHaveBeenCalled();
-        expect(warning).toHaveBeenCalledOnce();
-        expect(warning.mock.calls[0]![0]).toMatch(/project--legacy.lock/);
-        expect(warning.mock.calls[0]![0]).not.toMatch(/not-for-logs|PRIVATE_SELECTOR|close its other CCC sessions/);
+        const inspect = vi.fn(() => ({ known: false, containerId: null }));
+        expect(reconcile(inspect)).toEqual([]);
+        expect(existsSync(legacy)).toBe(false); expect(inspect).not.toHaveBeenCalled();
+        expect(effects.spawn).not.toHaveBeenCalled(); expect(effects.cleanup).not.toHaveBeenCalled(); expect(warning).not.toHaveBeenCalled();
     });
     it("rejects project/profile mismatches before inspecting or reclaiming any record", () => {
         const legacy = writeClaim("project--legacy.lock", "4242"); effects.classify.mockReturnValue("stale");
@@ -214,70 +198,56 @@ describe("scoped administrative claim reconciliation", () => {
     });
 });
 
-describe("native Darwin device receipt recovery", () => {
-    it.each([
-        ["full ID", { status: 0, stdout: `${containerId}\n` }, true],
-        ["confirmed absence", { status: 0, stdout: "" }, true],
-        ["nonzero exit", { status: 1, stdout: containerId }, false],
-        ["signal", { status: 0, stdout: containerId, signal: "SIGTERM" }, false],
-        ["spawn error", { status: 0, stdout: containerId, error: new Error("unavailable") }, false],
-        ["multiple IDs", { status: 0, stdout: `${containerId}\n${"c".repeat(64)}\n` }, false],
-        ["another ID", { status: 0, stdout: "c".repeat(64) }, false],
-    ] as const)("uses recorded runtime A under ambient B for %s", (_kind, reply, accepted) => {
-        const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
-        Object.defineProperty(process, "platform", { ...platform, value: "darwin" });
-        try {
-            const own = writeClaim("project--old.lock", { version: 3, pid: 4242, startToken: "old-parent", ownershipKind: "monitored" });
-            const paths = [own, `${own}.runtime.json`, `${own}.guardian.json`];
-            const receipt = captureNativeSessionOwnership(own), captured = runtimeFacade.getRuntimeInvocation();
-            const observations = createNativeSessionClaimObservationStore();
-            const binding = { lockFile: own, projectPath: root, prefix: "project", toolName: "claude" };
-            const initial = observations.begin({ receipt, binding, runtimeInvocation: captured,
-                guardian: { pid: 4343, startToken: "old-guardian" }, generation: "1" });
-            const ready = observations.update(initial, { ...initial.observation, registration: "ready",
-                lastAcknowledged: { generation: "1", sequence: 1, containerId, cleanupEnabled: true } });
+describe("native stale-parent retirement", () => {
+    it.each(["ready", "device-drift", "partial", "malformed", "missing"] as const)("revokes stale presence with %s history and a live guardian without native runtime effects", history => {
+        const own = writeClaim("project--old.lock", { version: 3, pid: 4242, startToken: "old-parent", ownershipKind: "monitored" });
+        const paths = [own, `${own}.runtime.json`, `${own}.guardian.json`];
+        const receipt = captureNativeSessionOwnership(own), captured = runtimeFacade.getRuntimeInvocation();
+        const observations = createNativeSessionClaimObservationStore();
+        const binding = { lockFile: own, projectPath: root, prefix: "project", toolName: "claude" };
+        const initial = observations.begin({ receipt, binding, runtimeInvocation: captured,
+            guardian: { pid: 4343, startToken: "old-guardian" }, generation: "1" });
+        const ready = observations.update(initial, { ...initial.observation, registration: "ready",
+            lastAcknowledged: { generation: "1", sequence: 1, containerId, cleanupEnabled: true } });
+        if (history === "device-drift") {
             const obsoleteDevice = String(BigInt(receipt.device) + 1n);
-            const drifted = { ...ready.observation, claim: { ...ready.observation.claim, device: obsoleteDevice },
-                runtime: { ...ready.observation.runtime, device: obsoleteDevice } };
-            writeFileSync(paths[2]!, JSON.stringify(drifted));
-            const original = paths.map(path => readFileSync(path, "utf8"));
+            writeFileSync(paths[2]!, JSON.stringify({ ...ready.observation,
+                claim: { ...ready.observation.claim, device: obsoleteDevice }, runtime: { ...ready.observation.runtime, device: obsoleteDevice } }));
             expect(() => observations.read(receipt, binding)).toThrow();
-            const ambient = nativeRuntimeInvocationFixture();
-            runtimeFacade._setRuntimeInvocationForTest({ ...ambient, executable: "/ambient/runtime/docker",
-                transport: { kind: "docker", host: "unix:///ambient/engine.sock", configDirectory: "/ambient/config",
-                    tls: { enabled: false, verify: false, caFile: null, certFile: null, keyFile: null } } });
-            effects.classify.mockReturnValue("stale");
-            effects.cleanup.mockImplementation(() => {
-                expect(paths.slice(0, 2).map(path => readFileSync(path, "utf8"))).toEqual(original.slice(0, 2));
-                expect(JSON.parse(readFileSync(paths[2]!, "utf8"))).toEqual(ready.observation);
-                return { results: [] };
-            });
-            effects.spawn.mockImplementation((_program: string, args: string[]) => {
-                expect(held).toBe(true);
-                return args.includes("ps") ? reply : { status: 0 };
-            });
-            const claims = createNativeSessionClaims(session.withContainerLifecycleLock);
-            const scope = { runtimeInvocation: runtimeFacade.getRuntimeInvocation(), inspectContainer: vi.fn(), stopContainer: vi.fn() };
-            const result = session.withContainerLifecycleLock("project", () =>
-                claims.reconcileSessionClaimsInHeldLifecycleLock("project", undefined, scope));
-            const ps = ["ps", "-aq", "--no-trunc", "-f", `id=${containerId}`];
-            const calls = effects.spawn.mock.calls.map(([program, args]) => {
-                expect(program).toBe(captured.executable);
-                expect(args.slice(0, 4)).toEqual(["--config", "/fixture/config", "--host", "unix:///fixture/engine.sock"]);
-                return args.slice(args.includes("ps") ? args.indexOf("ps") : args.indexOf("stop"));
-            });
-            expect(scope.inspectContainer).not.toHaveBeenCalled(); expect(scope.stopContainer).not.toHaveBeenCalled();
-            if (accepted) {
-                expect(result).toEqual({ claims: [] }); expect(paths.map(existsSync)).toEqual([false, false, false]);
-                expect(effects.cleanup).toHaveBeenCalledOnce();
-                expect(calls).toEqual(reply.stdout ? [ps, ps, ["stop", containerId]] : [ps, ps]);
-            } else {
-                expect(result.error?.message).toMatch(/session-cleanup-responsibility-incomplete/);
-                expect(result.claims).toEqual(["project--old.lock"]);
-                expect(paths.map(path => readFileSync(path, "utf8"))).toEqual(original);
-                expect(calls).toEqual([ps]); expect(effects.cleanup).not.toHaveBeenCalled();
+        } else if (history === "partial") rmSync(paths[2]!);
+        else if (history === "malformed") writeFileSync(paths[1]!, "not a runtime invocation");
+        else if (history === "missing") paths.slice(1).forEach(path => rmSync(path));
+        const ambient = nativeRuntimeInvocationFixture();
+        runtimeFacade._setRuntimeInvocationForTest({ ...ambient, executable: "/ambient/runtime/docker",
+            transport: { kind: "docker", host: "unix:///ambient/engine.sock", configDirectory: "/ambient/config",
+                tls: { enabled: false, verify: false, caFile: null, certFile: null, keyFile: null } } });
+        effects.classify.mockImplementation(content => sessionLockOwner(content)?.pid === 4242 ? "stale" : "active");
+        const claims = createNativeSessionClaims(session.withContainerLifecycleLock);
+        const scope = { runtimeInvocation: runtimeFacade.getRuntimeInvocation(), inspectContainer: vi.fn(), stopContainer: vi.fn() };
+        const result = session.withContainerLifecycleLock("project", () =>
+            claims.reconcileSessionClaimsInHeldLifecycleLock("project", undefined, scope));
+        expect(result).toEqual({ claims: [] }); expect(existsSync(own)).toBe(false);
+        expect(scope.inspectContainer).not.toHaveBeenCalled(); expect(scope.stopContainer).not.toHaveBeenCalled();
+        expect(effects.spawn).not.toHaveBeenCalled(); expect(effects.cleanup).not.toHaveBeenCalled();
+    });
+
+    it("preserves a same-path replacement created after stale liveness was observed", () => {
+        const own = writeClaim("project--old.lock", { version: 3, pid: 4242, startToken: "old-parent", ownershipKind: "monitored" });
+        const original = captureNativeSessionOwnership(own), saved = join(root, "original-claim");
+        let replaced = false;
+        effects.classify.mockImplementation(() => {
+            if (!replaced) {
+                expect(held).toBe(true); replaced = true;
+                renameSync(own, saved); writeFileSync(own, Buffer.from(original.bytes, "base64"), { mode: 0o600 });
             }
-        } finally { Object.defineProperty(process, "platform", platform); }
+            return "stale";
+        });
+        const claims = createNativeSessionClaims(session.withContainerLifecycleLock);
+        const result = session.withContainerLifecycleLock("project", () => claims.reconcileSessionClaimsInHeldLifecycleLock("project"));
+        expect(result.claims).toEqual(["project--old.lock"]);
+        expect(readFileSync(own)).toEqual(readFileSync(saved));
+        expect(captureNativeSessionOwnership(own).inode).not.toBe(original.inode);
+        expect(effects.spawn).not.toHaveBeenCalled(); expect(effects.cleanup).not.toHaveBeenCalled();
     });
 });
 

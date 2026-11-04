@@ -367,28 +367,21 @@ console.log(JSON.stringify({
 }, 20000);
 
 
-it.each(["preflight-refusal", "uncertain-mutation", "stopped-upgrade", "retry-target-missing", "retained-join", "retained-stopped", "retained-provisional", "retained-timeout", "retained-live-proof", "retained-ack-failure", "retained-retry-changed", "retained-changed", "retained-postack-changed", "retained-mixed-ack-running", "retained-mixed-ack-stopped", "retained-mixed-own-start-running", "retained-mixed-own-start-stopped", "retained-mixed-receipt-race", "retained-mixed-cohort-race"] as const)("composed native session retires only qualified startup responsibility: %s", async scenario => {
+it.each(["preflight-refusal", "uncertain-mutation", "stopped-upgrade", "retry-target-missing"] as const)("composed native session retires only qualified startup responsibility: %s", async scenario => {
     const root = mkdtempSync(join(tmpdir(), "ccc-exec-native-retirement-"));
     const child = spawn(process.execPath, ["--input-type=module", "-e", `
 import assert from 'node:assert/strict';
 import cp from 'node:child_process';
 import {syncBuiltinESMExports} from 'node:module';
-import {existsSync,lstatSync,mkdirSync,readFileSync,readdirSync,renameSync,writeFileSync} from 'node:fs';
+import {existsSync,mkdirSync,readFileSync,readdirSync,writeFileSync} from 'node:fs';
 import {basename,join} from 'node:path';
-import {inspect} from 'node:util';
 const root=${JSON.stringify(root)}, scenario=${JSON.stringify(scenario)}, project=join(root,'project');
 mkdirSync(project);
 writeFileSync(join(project,'untracked.txt'),'uncommitted work\\n');
 const oldId='a'.repeat(64), nextId='b'.repeat(64), helperId='c'.repeat(64), image='sha256:'+'d'.repeat(64);
 const executable=join(root,'private-runtime'), originalSpawnSync=cp.spawnSync, effects=[];
 let removed=false, stopped=false, projectId, markerRead=false;
-const retryScenario=scenario==='retry-target-missing', retainedScenario=scenario.startsWith('retained-');
-const mixedRetained=scenario.startsWith('retained-mixed-'), cohortRace=mixedRetained&&scenario.endsWith('-race');
-let raceInjected=false, seedRetained;
-const retainedStopped=['retained-stopped','retained-provisional','retained-timeout','retained-live-proof','retained-ack-failure','retained-retry-changed'].includes(scenario)||mixedRetained&&scenario.endsWith('-stopped');
-const retainedSuccess=['retained-join','retained-stopped','retained-provisional'].includes(scenario)||mixedRetained&&!cohortRace;
-let targetRunning=retainedScenario&&!retainedStopped, exactStarts=0, retainedAttempts=0, retryTargetChanged=false;
-const retainedFiles=[], cleanupFlags=[];let projectFingerprint, commandLaunched=false, falseAckAtLaunch=false, warningShown=false, falseAckBeforeFailure=false;
+const retryScenario=scenario==='retry-target-missing';
 let externallyRemoved=false, retryStarts=0, secondDispatches=0, expectedAtRetry, ownTargetAtRetry=false;
 cp.spawnSync=(command,argv,options)=>{
  if(command!==executable) return originalSpawnSync(command,argv,options);
@@ -397,28 +390,9 @@ cp.spawnSync=(command,argv,options)=>{
  if(args[0]==='ps') return {status:0,stdout:retryScenario&&externallyRemoved?'':(removed?nextId:oldId)+'\\n'};
  if(args[0]==='inspect'&&args.includes('{{.Id}}')) return {status:0,stdout:image};
  if(args[0]==='inspect') {
-   if(cohortRace&&!raceInjected){
-     const ownPath=session.getCurrentSession().lockFile;
-     const own=ownPath&&existsSync(ownPath)?store.read(captureNativeSessionOwnership(ownPath),{prefix:projectId}):null;
-     if(own?.observation.lastAcknowledged?.containerId===oldId&&own.observation.lastAcknowledged.cleanupEnabled===false){
-       claim=ownPath;guardian=own.observation.guardian;falseAckBeforeFailure=true;raceInjected=true;
-       if(scenario==='retained-mixed-cohort-race')seedRetained(2);
-       else {
-         const captured=retainedFiles.find(file=>file.path.endsWith('retained-1.lock.guardian.json'));
-         const replacement=join(root,'replacement-guardian');writeFileSync(replacement,captured.bytes,{mode:0o600,flag:'wx'});
-         renameSync(replacement,captured.path);const stat=lstatSync(captured.path);assert.notEqual(stat.ino,captured.ino);
-         captured.ino=stat.ino;captured.dev=stat.dev;
-       }
-     }
-   }
-   return {status:0,stdout:JSON.stringify({Id:retryTargetChanged?nextId:oldId,Image:'sha256:'+'e'.repeat(64),State:{Running:targetRunning},
-   Config:{Labels:{'ccc.managed':'true','ccc.project.path':project,...(retainedScenario&&scenario!=='retained-provisional'?{'ccc.project.mount-identity':projectFingerprint}:{})}},
+   return {status:0,stdout:JSON.stringify({Id:oldId,Image:'sha256:'+'e'.repeat(64),State:{Running:false},
+   Config:{Labels:{'ccc.managed':'true','ccc.project.path':project}},
    Mounts:[{Type:'bind',Source:project,Destination:'/project/'+projectId,RW:true}]})};
- }
- if(args[0]==='start') {
-   assert.equal(retainedStopped,true); assert.deepEqual(args,['start',oldId]); assert.equal(targetRunning,false); exactStarts++;
-   if(scenario==='retained-timeout')return {status:null,error:Object.assign(new Error('controlled existing-target start timeout'),{code:'ETIMEDOUT'})};
-   targetRunning=true;return {status:0,stdout:oldId};
  }
  if(args[0]==='cp') return {status:1,stdout:'',stderr:'stopped copy unsupported'};
  if(args[0]==='run') {
@@ -456,102 +430,25 @@ const {encodeSessionClaim}=await import(new URL('./domain/session-claims.js',${J
 const {sessionLockLiveness}=await import(${JSON.stringify(sessionLockLivenessUrl)});
 projectId=getProjectId(project);
 const store=createNativeSessionClaimObservationStore();
-if(retainedScenario){
- const {locksDir}=await import(new URL('./home-layout.js',${JSON.stringify(sessionUrl)}));
- const {captureBindMountSourceIdentity,bindMountSourceIdentityDigest}=await import(new URL('./adapters/container-mount-observations.js',${JSON.stringify(sessionUrl)}));
- const reapedChildIdentity=()=>{
-   const program=[
-     'import assert from "node:assert/strict"',
-     'const {processStartToken}=await import('+JSON.stringify(${JSON.stringify(sessionLockLivenessUrl)})+')',
-     'const startToken=processStartToken(process.pid)',
-     'assert.ok(startToken,"fixture child lacks native process identity")',
-     'process.stdout.write(JSON.stringify({pid:process.pid,startToken}))',
-   ].join(';');
-   const result=originalSpawnSync(process.execPath,['--input-type=module','--eval',program],{cwd:root,encoding:'utf8',stdio:['ignore','pipe','pipe'],windowsHide:true});
-   assert.equal(result.error,undefined,'fixture identity child could not complete');
-   assert.equal(result.status,0,'fixture identity child did not exit successfully: '+result.stderr);
-   assert.equal(result.signal,null,'fixture identity child was signalled');
-   assert.ok(Number.isSafeInteger(result.pid)&&result.pid>0,'fixture identity child did not supply a valid PID');
-   const identity=JSON.parse(result.stdout);
-   assert.equal(identity.pid,result.pid);assert.equal(typeof identity.startToken,'string');assert.ok(identity.startToken.length>0);
-   return identity;
- };
- // Capture each real identity before its clean completion; a reused PID is a different process.
- const deadOwner=reapedChildIdentity(),deadGuardian=reapedChildIdentity();
- assert.notDeepEqual(deadOwner,deadGuardian,'fixture child process identity was reused');
- const staleReapedClaim=identity=>{
-   const content=encodeSessionClaim(identity.pid,identity.startToken,'monitored');
-   assert.equal(sessionLockLiveness(content),'stale','completed fixture child lacks native stale identity proof');
-   return content;
- };
- projectFingerprint=bindMountSourceIdentityDigest(captureBindMountSourceIdentity(project));
- mkdirSync(locksDir(),{recursive:true,mode:0o700});
- session.withContainerLifecycleLock(projectId,()=>{
-   seedRetained=index=>{
-     const path=join(locksDir(),projectId+'--retained-'+index+'.lock'),generation='retained-generation-'+index;
-     const owner=staleReapedClaim(deadOwner),guardian={...deadGuardian};
-     staleReapedClaim(guardian);
-     writeFileSync(path,owner,{mode:0o600,flag:'wx'});
-     let old=store.begin({receipt:captureNativeSessionOwnership(path),binding:{lockFile:path,projectPath:project,prefix:projectId},
-       runtimeInvocation:runtime.getRuntimeInvocation(),guardian,generation});
-     const positive=mixedRetained&&index===1,ownStart=positive&&scenario.includes('-own-start-');
-     old=store.update(old,{...old.observation,
-       registration:positive?'ready':old.observation.registration,
-       pending:positive&&!ownStart?null:{kind:'startup',generation,sequence:1,containerId:positive?oldId:null,cleanupEnabled:true},
-       lastAcknowledged:positive&&!ownStart?{generation,sequence:1,containerId:oldId,cleanupEnabled:true}:null,
-       ownStarted:ownStart?{generation,containerId:oldId}:null,
-       recovery:positive?{status:'recovery-needed',diagnostic:'session-cleanup-failed'}:old.observation.recovery});
-     for(const entry of [path,path+'.guardian.json',path+'.runtime.json']){
-       const stat=lstatSync(entry);retainedFiles.push({path:entry,bytes:readFileSync(entry,'utf8'),ino:stat.ino,dev:stat.dev});
-     }
-   };
-   seedRetained(0);seedRetained(1);
- });
-}
 const ports=createNativeContainerExecPorts({ensureDirectories(){},ensureProjectTools:async()=>{},assetDirectory:root,trustedCliPath:join(root,'unused-cli')});
 const noop=()=>{}, primary=new Error('controlled startup refusal');
 let claim, guardian, mutationIntents=0;
-const acquire=ports.acquireOwnership, begin=ports.beginSessionStartupInHeldLifecycleLock, setCleanup=ports.setCleanupEnabled, confirm=ports.confirmOwnership;
+const acquire=ports.acquireOwnership, begin=ports.beginSessionStartupInHeldLifecycleLock;
 Object.assign(ports,{
  ensureRuntime:noop,resolveProject:()=>project,ensureDirectories:noop,ensureProjectTools:async()=>{},debugEnabled:()=>false,
  terminalReady:()=>false,tool:()=>undefined,isWorktreeWorkspace:()=>false,
  ensureClipboard:async()=>null,validateClipboard:async selected=>selected,worktreeMounts:()=>[],prepareDeviceBroker:async()=>{},
- containerName:()=> 'fixture-project',containerStatus:()=>retainedScenario?{exists:true,running:targetRunning,containerId:scenario==='retained-changed'||retryTargetChanged?nextId:oldId,imageId:'current-image'}:retryScenario?{exists:false,running:false,containerId:null,imageId:null}:{exists:true,running:false,containerId:oldId,imageId:'old-image'},
- inspectSessionContainer:scenario==='stopped-upgrade'||retainedScenario?(...args)=>{
-   const inspected=docker.inspectSessionContainerOwnership(...args);
-   if(scenario==='retained-postack-changed'){
-     const currentPath=session.getCurrentSession().lockFile;
-     const observed=currentPath?store.read(captureNativeSessionOwnership(currentPath),{prefix:projectId}):null;
-     if(observed?.observation.lastAcknowledged?.containerId===oldId&&observed.observation.lastAcknowledged.cleanupEnabled===false){
-       claim=currentPath;guardian=observed.observation.guardian;falseAckBeforeFailure=true;
-       return {...inspected,containerId:nextId};
-     }
-   }
-   return inspected;
- }:()=>({known:true,containerId:retryScenario?null:oldId,running:false}),
+ containerName:()=> 'fixture-project',containerStatus:()=>retryScenario?{exists:false,running:false,containerId:null,imageId:null}:{exists:true,running:false,containerId:oldId,imageId:'old-image'},
+ inspectSessionContainer:scenario==='stopped-upgrade'?(...args)=>docker.inspectSessionContainerOwnership(...args):()=>({known:true,containerId:retryScenario?null:oldId,running:false}),
  async acquireOwnership(...args){
    const result=await acquire(...args); claim=result.lockFile;
    const snapshot=store.read(captureNativeSessionOwnership(claim),{prefix:projectId});
    assert.ok(snapshot); assert.equal(snapshot.observation.pending,null); guardian=snapshot.observation.guardian;
    if(scenario==='stopped-upgrade') assert.equal(result.requiresLiveVerification,true);
-   if(retainedScenario){assert.equal(result.existingOnly,true);assert.equal(result.existingId,oldId);assert.equal(snapshot.observation.lastAcknowledged.cleanupEnabled,false);
-     if(retainedStopped){assert.equal(targetRunning,false);if(scenario==='retained-provisional')assert.equal(result.requiresLiveVerification,true);}}
    return result;
  },
  beginSessionStartupInHeldLifecycleLock(){mutationIntents++;begin();},
- setCleanupEnabled(enabled){cleanupFlags.push(enabled);setCleanup(enabled);},
- prepareContainer:policy=>{if(retainedScenario)assert.deepEqual(policy,{existingContainerId:oldId});else assert.equal(policy,undefined);return {start(...args){
-   if(retainedScenario){
-     retainedAttempts++;assert.equal(args[8],oldId);assert.equal(args[6](()=>{throw new Error('restricted replacement was dispatched');}),false);
-     if(retainedAttempts===2){assert.equal(scenario,'retained-retry-changed');assert.equal(retryTargetChanged,true);throw new Error('controlled retained retry target changed');}
-     if(retainedStopped){
-       const started=runtime.runtimeSpawnSync(['start',oldId],{encoding:'utf8',timeout:1});
-       if(started.error)throw started.error;
-       assert.equal(started.status,0);assert.equal(targetRunning,true);
-       if(scenario==='retained-live-proof')throw new Error('controlled live contract proof failed');
-     }
-     args[7](oldId,{startedByInvocation:false});return 'fixture-project';
-   }
+ prepareContainer:policy=>{assert.equal(policy,undefined);return {start(...args){
    if(retryScenario) {
      if(++retryStarts===1){args[11]();args[9](oldId);args[7](oldId,{startedByInvocation:true});return 'fixture-project';}
      expectedAtRetry=args[8];
@@ -582,59 +479,21 @@ Object.assign(ports,{
    if(scenario==='uncertain-mutation'){args[11]();args[11]();}
    throw primary;
  },initialize(){
-   if(retainedScenario){
-     assert.equal(targetRunning,true);
-     const current=store.read(captureNativeSessionOwnership(claim),{prefix:projectId});assert.ok(current);
-     assert.equal(current.observation.pending,null);assert.equal(current.observation.ownStarted,null);
-     assert.equal(current.observation.lastAcknowledged.containerId,oldId);assert.equal(current.observation.lastAcknowledged.cleanupEnabled,false);
-   }else if(!retryScenario)throw primary;
+   if(!retryScenario)throw primary;
  }};},
- setupFailure:cause=>new Error('Container setup failed',{cause}),isRestartRequired:()=>false,report:event=>{if(event.kind==='recovery-retained')warningShown=true;},
+ setupFailure:cause=>new Error('Container setup failed',{cause}),isRestartRequired:()=>false,report:noop,
 });
 if(retryScenario) Object.assign(ports,{
  configLock:operation=>operation(),restoreConfig:noop,ensureUv:noop,setupProxy:noop,
  buildMcpConfig:async()=>{await Promise.resolve();externallyRemoved=true;return [];},
  containerRunning:()=>!externallyRemoved,
 });
-if(retainedScenario) Object.assign(ports,{
- configLock:operation=>operation(),restoreConfig:noop,ensureUv:noop,setupProxy:noop,installProjectTools:noop,
- buildMcpConfig:async()=>{if(scenario==='retained-retry-changed'){targetRunning=false;retryTargetChanged=true;}return [];},containerRunning:()=>targetRunning,
- installTools:noop,
- syncClipboard:noop,ensureSocketAccess:noop,startClipboardBridge:noop,
- async confirmOwnership(){await confirm();if(scenario==='retained-ack-failure')throw new Error('controlled disabled acknowledgement observation failed');},
- observeCommandEnvironment:()=>({forwarded:[],skippedKeys:[],containerMarker:['container','docker'],hostLangPresent:true}),
- prepareCommand:intent=>{assert.equal(intent.target,oldId);return Symbol('private command');},
- prepareCodexCommand:()=>({ok:true}),disposeCommand:noop,
- launchCommand:async()=>{
-   const current=store.read(captureNativeSessionOwnership(claim),{prefix:projectId});assert.ok(current);
-   falseAckAtLaunch=current.observation.lastAcknowledged?.containerId===oldId
-     &&current.observation.lastAcknowledged.cleanupEnabled===false&&current.observation.ownStarted===null&&current.observation.pending===null;
-   assert.equal(falseAckAtLaunch,true);assert.ok(cleanupFlags.every(enabled=>enabled===false));commandLaunched=true;return 17;
- },
-});
-let error,status;
-try {status=await createContainerExec(ports).exec(project,['printf']);} catch(cause){error=cause;}
-if(retainedScenario&&retainedSuccess){assert.equal(error,undefined);assert.equal(status,17);}else assert.ok(error);
+let error;
+try {await createContainerExec(ports).exec(project,['printf']);} catch(cause){error=cause;}
+assert.ok(error);
 const snapshot=existsSync(claim)?store.read(captureNativeSessionOwnership(claim),{prefix:projectId}):null;
 const retained=snapshot!==null, pending=snapshot?.observation.pending?.kind??null;
-if(retainedScenario){
- if(retainedSuccess){assert.equal(commandLaunched,true);assert.equal(falseAckAtLaunch,true);assert.equal(warningShown,true);}
- else {assert.ok(!(error instanceof AggregateError));
-   const expected=cohortRace?/session-cleanup-responsibility-incomplete/:scenario==='retained-postack-changed'?/Retained predecessor recovery requires the same identified managed container/:
-     scenario==='retained-timeout'?/controlled existing-target start timeout/:scenario==='retained-live-proof'?/controlled live contract proof failed/:
-     scenario==='retained-ack-failure'?/controlled disabled acknowledgement observation failed/:scenario==='retained-retry-changed'?/controlled retained retry target changed/:/Existing-only session/;
-   assert.match((error.cause??error).message,expected,inspect(error,{depth:5}));
-   assert.equal(commandLaunched,false);
- }
- if(scenario==='retained-postack-changed'||cohortRace)assert.equal(falseAckBeforeFailure,true);
- if(cohortRace)assert.equal(raceInjected,true);
- assert.equal(retained,false);assert.equal(pending,null);assert.equal(mutationIntents,0);assert.ok(cleanupFlags.every(enabled=>enabled===false));
- assert.equal(exactStarts,retainedStopped?1:0);assert.equal(effects.filter(effect=>effect==='start').length,exactStarts);
- assert.equal(effects.some(effect=>['run','rm','stop'].includes(effect)),false);
- assert.equal(retainedAttempts,scenario==='retained-retry-changed'?2:scenario==='retained-changed'||scenario==='retained-postack-changed'||cohortRace?0:1);
- for(const old of retainedFiles){const stat=lstatSync(old.path);assert.equal(readFileSync(old.path,'utf8'),old.bytes);assert.equal(stat.ino,old.ino);assert.equal(stat.dev,old.dev);}
- assert.equal(retainedFiles.length,scenario==='retained-mixed-cohort-race'?9:6);
-} else if(scenario==='uncertain-mutation') {
+if(scenario==='uncertain-mutation') {
  assert.ok(error instanceof AggregateError); assert.equal(error.errors[0].cause,primary);
  assert.equal(pending,'startup'); assert.equal(mutationIntents,1); assert.equal(stopped,false);
  // The controlled fake effect created no resource. After asserting retention,
@@ -661,9 +520,7 @@ const guardianClaim=encodeSessionClaim(guardian.pid,guardian.startToken,'monitor
 while(Date.now()<until){if(sessionLockLiveness(guardianClaim)==='stale')break;await new Promise(resolve=>setTimeout(resolve,20));}
 assert.equal(sessionLockLiveness(guardianClaim),'stale','owned guardian identity did not exit');
 console.log(JSON.stringify({retained,pending,mutationIntents,markerRead,removed,stopped,claimsRetired:true,
- ...(retryScenario?{retryStarts,secondDispatches,expectedAtRetry,ownTargetAtRetry}:{}),
- ...(retainedScenario?{retainedFiles:retainedFiles.length,commandLaunched,falseAckAtLaunch,cleanupFlags,exactStarts}: {}),
- ...(scenario==='retained-postack-changed'||cohortRace?{falseAckBeforeFailure}:{})}));
+ ...(retryScenario?{retryStarts,secondDispatches,expectedAtRetry,ownTargetAtRetry}:{})}));
 `], {cwd: root, env: {...process.env, HOME: root, USERPROFILE: root, CCC_HOME: undefined, CCC_PROFILE: undefined}, stdio: ["ignore", "pipe", "pipe"]});
     let stdout = "", stderr = "";
     child.stdout.on("data", data => { stdout += String(data); }); child.stderr.on("data", data => { stderr += String(data); });
@@ -673,16 +530,9 @@ console.log(JSON.stringify({retained,pending,mutationIntents,markerRead,removed,
         expect(await completed, stderr).toBe(0);
         expect(JSON.parse(stdout.trim())).toEqual({
             retained: scenario === "uncertain-mutation", pending: scenario === "uncertain-mutation" ? "startup" : null,
-            mutationIntents: scenario === "preflight-refusal" || scenario.startsWith("retained-") ? 0 : 1,
+            mutationIntents: scenario === "preflight-refusal" ? 0 : 1,
             markerRead: scenario === "stopped-upgrade", removed: scenario === "stopped-upgrade", stopped: scenario === "stopped-upgrade", claimsRetired: true,
             ...(scenario === "retry-target-missing" ? {retryStarts: 2, secondDispatches: 0, expectedAtRetry: "a".repeat(64), ownTargetAtRetry: true} : {}),
-            ...(scenario.startsWith("retained-") ? {
-                retainedFiles: scenario === "retained-mixed-cohort-race" ? 9 : 6, commandLaunched: (["retained-join", "retained-stopped", "retained-provisional"].includes(scenario) || scenario.startsWith("retained-mixed-") && !scenario.endsWith("-race")),
-                falseAckAtLaunch: (["retained-join", "retained-stopped", "retained-provisional"].includes(scenario) || scenario.startsWith("retained-mixed-") && !scenario.endsWith("-race")),
-                cleanupFlags: (["retained-join", "retained-stopped", "retained-provisional"].includes(scenario) || scenario.startsWith("retained-mixed-") && !scenario.endsWith("-race")) ? [false] : [],
-                exactStarts: (["retained-stopped", "retained-provisional", "retained-timeout", "retained-live-proof", "retained-ack-failure", "retained-retry-changed"].includes(scenario) || scenario.startsWith("retained-mixed-") && scenario.endsWith("-stopped")) ? 1 : 0,
-            } : {}),
-            ...(scenario === "retained-postack-changed" || scenario.startsWith("retained-mixed-") && scenario.endsWith("-race") ? {falseAckBeforeFailure: true} : {}),
         });
     } finally {
         clearTimeout(timeout); if (child.exitCode === null && child.signalCode === null) child.kill();

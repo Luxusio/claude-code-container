@@ -1,7 +1,7 @@
 import { basename, dirname, join, resolve } from "path";
 import { withSharedMutationLock, withSharedMutationLockAsync } from "@ccc/device-lab/device-lab-shared-state.js";
 import { getProjectId } from "@ccc/device-lab/project-identity.js";
-import { nativeSessionOwnershipMatches } from "../adapters/session-ownership.js";
+import { captureNativeSessionOwnership, nativeSessionOwnershipMatches } from "../adapters/session-ownership.js";
 import { sessionClaimPrefix, sessionLockClaimsForContainer } from "../domain/session-claims.js";
 import { sessionLockOwner } from "../domain/session-lock.js";
 import { locksDir } from "../home-layout.js";
@@ -44,12 +44,25 @@ export function assertNativeSessionOwnership(receipt: SessionOwnershipReceipt): 
     if (!nativeSessionOwnershipMatches(receipt)) throw new Error("Session ownership receipt is absent, unreadable, or replaced.");
 }
 
+/** The caller holds the lifecycle guard. Failure to observe is not proof of revocation. */
+export function isNativeSessionOwnershipRevoked(receipt: SessionOwnershipReceipt): boolean {
+    let current: SessionOwnershipReceipt;
+    try { current = captureNativeSessionOwnership(receipt.path); }
+    catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return true;
+        throw error;
+    }
+    return current.bytes !== receipt.bytes || current.device !== receipt.device || current.inode !== receipt.inode
+        || current.birthtime !== receipt.birthtime || current.ownerPid !== receipt.ownerPid;
+}
+
 export async function rollbackCapturedNativeSessionOwnership(
     binding: SessionOwnershipBinding, receipt: SessionOwnershipReceipt,
 ): Promise<void> {
     const { createNativeSessionClaims } = await import("./session-claims.js");
     const prefix = sessionClaimPrefix(getProjectId(binding.projectPath), binding.profile);
     await withLifecycleLockAsync(prefix, () => {
+        if (isNativeSessionOwnershipRevoked(receipt)) return;
         createNativeSessionClaims(withLifecycleLock).settleCapturedResponsibilityInHeldLifecycleLock(binding, receipt);
     });
 }

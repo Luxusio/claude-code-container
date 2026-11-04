@@ -26,29 +26,21 @@ export interface SessionAcquisitionInspection extends SessionContainerInspection
     runtime: SessionOwnershipRuntime;
 }
 
-export interface SessionAcquisitionRecovery {
-    containerId: string;
-    runtime: SessionOwnershipRuntime;
-    diagnostic: string;
-}
-
 export interface SessionAcquisitionResult {
     lockFile: string;
     existingId: string | null;
     requiresLiveVerification?: true;
-    existingOnly?: true;
-    recoveryWarning?: string;
 }
 
 export interface SessionAcquisitionPorts {
     withLifecycleLock<T>(prefix: string, operation: () => Promise<T>): Promise<T>;
-    recoverPredecessors(prefix: string): void | SessionAcquisitionRecovery | Promise<void | SessionAcquisitionRecovery>;
+    recoverPredecessors(prefix: string): void | Promise<void>;
     reserve(projectId: string, profile?: string): string;
     initializeCapture(request: SessionAcquisitionRequest, lockFile: string): void | Promise<void>;
     inspectExisting(request: SessionAcquisitionRequest): SessionAcquisitionInspection | Promise<SessionAcquisitionInspection>;
     arm(): Promise<void>;
     acknowledge(containerId: string, runtime: SessionOwnershipRuntime): Promise<void>;
-    reconcileForeign(prefix: string, lockFile: string): boolean | SessionAcquisitionRecovery;
+    reconcileForeign(prefix: string, lockFile: string): boolean;
     rollback(lockFile: string): void | Promise<void>;
 }
 

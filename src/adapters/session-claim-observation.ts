@@ -1,13 +1,12 @@
 import { createHash, randomUUID } from "crypto";
-import { closeSync, fstatSync, fsyncSync, lstatSync, openSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "fs";
-import type { BigIntStats } from "fs";
+import { closeSync, fstatSync, fsyncSync, lstatSync, openSync, renameSync, unlinkSync, writeFileSync } from "fs";
 import { basename, dirname, resolve } from "path";
 import { getProjectId } from "@ccc/device-lab/project-identity.js";
 import { decodeSessionClaimObservation, type SessionClaimFileIdentity, type SessionClaimObservation,
     type SessionClaimObservationBinding } from "../domain/session-claim-observation.js";
 import { sessionClaimPrefix, sessionLockClaimsForContainer } from "../domain/session-claims.js";
 import { sessionLockOwner } from "../domain/session-lock.js";
-import type { BeginSessionClaimObservation, NativeSessionFileReceipt, SessionClaimDeviceDriftCandidate, SessionClaimObservationSnapshot,
+import type { BeginSessionClaimObservation, NativeSessionFileReceipt, SessionClaimObservationSnapshot,
     SessionClaimObservationStore } from "../ports/session-claim-observation.js";
 import type { SessionOwnershipReceipt } from "../ports/session-ownership.js";
 import { validateNativeRuntimeInvocation } from "./container-runtime-invocation.js";
@@ -31,10 +30,6 @@ function sameFile(left: NativeSessionFileReceipt, right: NativeSessionFileReceip
 function sameIdentity(left: SessionClaimFileIdentity, right: SessionClaimFileIdentity): boolean {
     return left.path === right.path && left.digest === right.digest && left.device === right.device
         && left.inode === right.inode && left.birthtime === right.birthtime;
-}
-
-function sameRecoveryIdentity(left: SessionClaimFileIdentity, right: SessionClaimFileIdentity): boolean {
-    return left.path === right.path && left.digest === right.digest && left.inode === right.inode && left.birthtime === right.birthtime;
 }
 
 function missing(path: string): boolean {
@@ -98,55 +93,8 @@ function freezeSnapshot(snapshot: SessionClaimObservationSnapshot): SessionClaim
         runtimeReceipt: Object.freeze({ ...snapshot.runtimeReceipt }), observationReceipt: Object.freeze({ ...snapshot.observationReceipt }) });
 }
 
-function recoveryOwner(stat: BigIntStats): void {
-    if (process.platform !== "darwin" || typeof process.geteuid !== "function"
-        || stat.uid !== BigInt(process.geteuid()) || (stat.mode & 0o077n) !== 0n
-        || stat.ino <= 0n || stat.birthtimeNs <= 0n) return changed();
-}
-
-function recoveryDirectory(path: string) {
-    const directory = dirname(path);
-    if (resolve(path) !== path || realpathSync(directory) !== directory) return changed();
-    const stat = lstatSync(directory, { bigint: true });
-    recoveryOwner(stat);
-    if (!stat.isDirectory() || stat.isSymbolicLink()) return changed();
-    return { path: directory, device: stat.dev, inode: stat.ino, birthtime: stat.birthtimeNs, uid: stat.uid, mode: stat.mode };
-}
-
-function assertRecoveryDirectory(path: string, before: ReturnType<typeof recoveryDirectory>): void {
-    const after = recoveryDirectory(path);
-    if (after.path !== before.path || after.device !== before.device || after.inode !== before.inode
-        || after.birthtime !== before.birthtime || after.uid !== before.uid || after.mode !== before.mode) return changed();
-}
-
-function recoveryFile(path: string, maximum: number, directory: ReturnType<typeof recoveryDirectory>) {
-    function facts() {
-        const stat = lstatSync(path, { bigint: true });
-        recoveryOwner(stat);
-        if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1n || stat.dev !== directory.device
-            || realpathSync(path) !== path) return changed();
-        return { device: String(stat.dev), inode: String(stat.ino), birthtime: String(stat.birthtimeNs),
-            uid: stat.uid, mode: stat.mode, links: stat.nlink };
-    }
-    const before = facts();
-    const receipt = privateFile(path, maximum);
-    const after = facts();
-    if (before.device !== receipt.device || before.inode !== receipt.inode || before.birthtime !== receipt.birthtime
-        || after.device !== receipt.device || after.inode !== receipt.inode || after.birthtime !== receipt.birthtime
-        || before.uid !== after.uid || before.mode !== after.mode || before.links !== after.links) return changed();
-    return { receipt, uid: after.uid, mode: after.mode, links: after.links };
-}
-
-function sameRecoveryFile(left: ReturnType<typeof recoveryFile>, right: ReturnType<typeof recoveryFile>): boolean {
-    return sameFile(left.receipt, right.receipt) && left.uid === right.uid && left.mode === right.mode && left.links === right.links;
-}
-
 /** All mutations run inside the caller's lifecycle guard; this adapter never acquires a second guard. */
 export function createNativeSessionClaimObservationStore(): SessionClaimObservationStore {
-    type RecoveryState = { directory: ReturnType<typeof recoveryDirectory>; main: ReturnType<typeof recoveryFile>;
-        runtime: ReturnType<typeof recoveryFile>; guardian: ReturnType<typeof recoveryFile> };
-    const recoveryCandidates = new WeakMap<SessionClaimDeviceDriftCandidate, RecoveryState>();
-
     function read(receipt: SessionOwnershipReceipt,
         requested: SessionClaimObservationBinding | { readonly prefix: string }): SessionClaimObservationSnapshot | null {
         const directory = privateDirectory(receipt.path);
@@ -254,93 +202,7 @@ export function createNativeSessionClaimObservationStore(): SessionClaimObservat
         unlinkSync(snapshot.runtimeReceipt.path);
     }
 
-    function captureDeviceDrift(receipt: SessionOwnershipReceipt,
-        requested: SessionClaimObservationBinding | { readonly prefix: string }): SessionClaimDeviceDriftCandidate | null {
-        const directory = recoveryDirectory(receipt.path);
-        const main = recoveryFile(receipt.path, 4096, directory);
-        if (!sameFile(receipt, main.receipt) || !nativeSessionOwnershipMatches(receipt)) return changed();
-        const sidecars = paths(receipt);
-        if (missing(sidecars.observation) && missing(sidecars.runtime)) {
-            assertRecoveryDirectory(receipt.path, directory);
-            if (!nativeSessionOwnershipMatches(receipt) || !missing(sidecars.observation) || !missing(sidecars.runtime)) return changed();
-            return null;
-        }
-        const guardian = recoveryFile(sidecars.observation, OBSERVATION_LIMIT, directory);
-        const observation = decodeSessionClaimObservation(JSON.parse(Buffer.from(guardian.receipt.bytes, "base64").toString("utf8")));
-        const owner = sessionLockOwner(Buffer.from(receipt.bytes, "base64").toString("utf8"));
-        validateBinding(receipt, observation.binding);
-        if (owner?.ownershipKind !== "monitored" || observation.claim.ownerPid !== receipt.ownerPid
-            || observation.binding.prefix !== requested.prefix || observation.runtime.path !== sidecars.runtime) return changed();
-        if ("lockFile" in requested && (requested.lockFile !== observation.binding.lockFile
-            || requested.projectPath !== observation.binding.projectPath || requested.profile !== observation.binding.profile
-            || requested.toolName !== observation.binding.toolName)) return changed();
-        const runtime = recoveryFile(sidecars.runtime, RUNTIME_LIMIT, directory);
-        // Only the persisted device pair may differ. Current captures and every
-        // same-operation comparison still require the complete native identity.
-        if (!sameRecoveryIdentity(observation.claim, identity(receipt))
-            || !sameRecoveryIdentity(observation.runtime, identity(runtime.receipt))
-            || observation.claim.device !== observation.runtime.device) return changed();
-        const runtimeInvocation = validateNativeRuntimeInvocation(JSON.parse(Buffer.from(runtime.receipt.bytes, "base64").toString("utf8")));
-        const candidate = Object.freeze({ observation, receipt: Object.freeze({ ...receipt }), runtimeInvocation });
-        recoveryCandidates.set(candidate, { directory, main, runtime, guardian });
-        assertDeviceDriftCurrent(candidate);
-        if (observation.claim.device === receipt.device) {
-            recoveryCandidates.delete(candidate);
-            return null;
-        }
-        return candidate;
-    }
-
-    function assertDeviceDriftCurrent(candidate: SessionClaimDeviceDriftCandidate): void {
-        const state = recoveryCandidates.get(candidate);
-        if (!state) return changed();
-        assertRecoveryDirectory(candidate.receipt.path, state.directory);
-        if (!nativeSessionOwnershipMatches(candidate.receipt)
-            || !sameRecoveryFile(state.main, recoveryFile(state.main.receipt.path, 4096, state.directory))
-            || !sameRecoveryFile(state.runtime, recoveryFile(state.runtime.receipt.path, RUNTIME_LIMIT, state.directory))
-            || !sameRecoveryFile(state.guardian, recoveryFile(state.guardian.receipt.path, OBSERVATION_LIMIT, state.directory))) return changed();
-        assertRecoveryDirectory(candidate.receipt.path, state.directory);
-    }
-
-    function repairDeviceDrift(candidate: SessionClaimDeviceDriftCandidate, revalidate: () => void): SessionClaimObservationSnapshot {
-        assertDeviceDriftCurrent(candidate);
-        revalidate();
-        const state = recoveryCandidates.get(candidate)!;
-        const next = decodeSessionClaimObservation({ ...candidate.observation,
-            claim: { ...candidate.observation.claim, device: state.main.receipt.device },
-            runtime: { ...candidate.observation.runtime, device: state.runtime.receipt.device } });
-        const path = state.guardian.receipt.path;
-        const temporaryPath = `${path}.${randomUUID()}.tmp`;
-        const temporary = exclusiveWrite(temporaryPath, serialized(next, OBSERVATION_LIMIT), OBSERVATION_LIMIT);
-        let temporaryState: ReturnType<typeof recoveryFile> | undefined;
-        try {
-            temporaryState = recoveryFile(temporaryPath, OBSERVATION_LIMIT, state.directory);
-            if (!sameFile(temporary, temporaryState.receipt)) return changed();
-            assertDeviceDriftCurrent(candidate);
-            if (!sameRecoveryFile(temporaryState, recoveryFile(temporaryPath, OBSERVATION_LIMIT, state.directory))) return changed();
-            revalidate();
-            // Revalidation may re-enter native code; pin all three names again
-            // before replacing only the obsolete guardian metadata.
-            assertDeviceDriftCurrent(candidate);
-            if (!sameRecoveryFile(temporaryState, recoveryFile(temporaryPath, OBSERVATION_LIMIT, state.directory))) return changed();
-            renameSync(temporaryPath, path);
-            recoveryCandidates.delete(candidate);
-            const current = read(candidate.receipt, candidate.observation.binding);
-            if (!current) return changed();
-            return current;
-        } finally {
-            try {
-                if (!missing(temporaryPath)) {
-                    const current = recoveryFile(temporaryPath, OBSERVATION_LIMIT, state.directory);
-                    if (temporaryState ? sameRecoveryFile(temporaryState, current) : sameFile(temporary, current.receipt)) unlinkSync(temporaryPath);
-                }
-            } catch { /* A changed temporary file is retained rather than removing a replacement. */ }
-        }
-    }
-
-    return { begin, read, assertCurrent, update, retire,
-        ...(process.platform === "darwin" ? { deviceDriftRecovery: { capture: captureDeviceDrift,
-            assertCurrent: assertDeviceDriftCurrent, repair: repairDeviceDrift } } : {}), matches(snapshot) {
+    return { begin, read, assertCurrent, update, retire, matches(snapshot) {
         try { assertCurrent(snapshot); return true; } catch { return false; }
     } };
 }

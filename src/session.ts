@@ -1,4 +1,4 @@
-import { basename, join } from "path";
+import { join } from "path";
 import { locksDir } from "./home-layout.js";
 import { withSharedMutationLock, withSharedMutationLockAsync } from "@ccc/device-lab/device-lab-shared-state.js";
 import { createNativeSessionClaims, ensureNativeSessionClaimsDirectory } from "./composition/session-claims.js";
@@ -6,12 +6,11 @@ import { armNativeSessionOwnership, assertNativeSessionOwnership, validateNative
 import { captureNativeSessionOwnership, nativeSessionOwnershipMatches, removeCapturedNativeSessionOwnership } from "./adapters/session-ownership.js";
 import { createSessionAcquisition } from "./application/session-acquisition.js";
 import { createSessionPublicationCoordinator } from "./application/session-publication-coordinator.js";
-import type { SessionAcquisitionPorts, SessionAcquisitionRequest, SessionAcquisitionResult, SessionAcquisitionRecovery } from "./ports/session-acquisition.js";
+import type { SessionAcquisitionPorts, SessionAcquisitionRequest, SessionAcquisitionResult } from "./ports/session-acquisition.js";
 import { getRuntimeInvocation, runWithNativeRuntimeInvocation } from "./container-runtime.js";
 import type { NativeRuntimeInvocation } from "./ports/container-runtime-invocation.js";
 import type { SessionOwnershipHandle, SessionOwnershipReceipt } from "./ports/session-ownership.js";
 import { createNativeSessionClaimObservationStore } from "./adapters/session-claim-observation.js";
-import { stopNativeSessionContainer } from "./adapters/session-cleanup.js";
 import type { SessionClaimRecoveryScope } from "./ports/session-claims.js";
 import { currentSessionClaimAuthority } from "./domain/session-claim-observation.js";
 import { sessionClaimPrefix } from "./domain/session-claims.js";
@@ -168,15 +167,6 @@ export async function armSessionOwnership(): Promise<number | undefined> {
     return armOwnershipInContext();
 }
 
-function sessionRecoveryScope(runtimeInvocation: NativeRuntimeInvocation,
-    inspect: SessionClaimRecoveryScope["inspectContainer"]): SessionClaimRecoveryScope {
-    return {
-        runtimeInvocation,
-        inspectContainer: () => runWithNativeRuntimeInvocation(runtimeInvocation, inspect),
-        stopContainer: readId => stopNativeSessionContainer(readId, runtimeInvocation),
-    };
-}
-
 export async function acquireHostSessionOwnership(
     request: SessionAcquisitionRequest,
     inspectExisting: SessionAcquisitionPorts["inspectExisting"],
@@ -185,42 +175,6 @@ export async function acquireHostSessionOwnership(
         throw new Error("Host session ownership is already being acquired.");
     }
     const runtimeInvocation = getRuntimeInvocation();
-    const recovery = sessionRecoveryScope(runtimeInvocation, () => {
-        const inspected = inspectExisting(request);
-        // Native inspection is synchronous. An asynchronous extension cannot
-        // supply fresh synchronous destructive proof; preserve legacy records.
-        if (inspected instanceof Promise) {
-            void inspected.catch(() => undefined);
-            return { known: false, containerId: null };
-        }
-        if (inspected.runtime !== runtimeInvocation.runtime) return { known: false, containerId: null };
-        return inspected;
-    });
-    let retainedRecovery: SessionAcquisitionRecovery | undefined;
-    let retainedAdmission: ReturnType<typeof sessionClaims.reconcileSessionClaimsInHeldLifecycleLock>["restrictedAdmission"];
-    let retainedOwnPath: string | undefined;
-    const revalidateRetainedCohort = (ownPath?: string) => {
-        const receipt = ownPath === undefined ? null : capturedOwnership;
-        if (ownPath !== undefined && (!receipt || receipt.path !== ownPath || !nativeSessionOwnershipMatches(receipt))) {
-            throw new Error("Restricted session reservation was replaced before cohort validation.");
-        }
-        retainedAdmission!.revalidate(ownPath);
-        if (receipt && !nativeSessionOwnershipMatches(receipt)) {
-            throw new Error("Restricted session reservation changed during cohort validation.");
-        }
-    };
-    const verifyRetainedTarget = (containerId: string, ownPath?: string) => {
-        const inspected = recovery.inspectContainer();
-        // A runtime observation is not permission to accept a changed cohort.
-        // This also catches replacements made during the synchronous probe.
-        revalidateRetainedCohort(ownPath);
-        if (!inspected.known || !inspected.containerId || !/^[a-f0-9]{64}$/i.test(inspected.containerId)
-            || typeof inspected.running !== "boolean" || inspected.running && inspected.requiresLiveVerification
-            || inspected.containerId !== containerId) {
-            throw new Error("Retained predecessor recovery requires the same identified managed container with a known running or stopped state; the existing records were preserved.");
-        }
-        return inspected.containerId;
-    };
     acquiringOwnership = true;
     acquisitionFailure = null;
     acquisitionCancellation = null;
@@ -255,15 +209,7 @@ export async function acquireHostSessionOwnership(
         const acquired = await runWithNativeRuntimeInvocation(runtimeInvocation, () => createSessionAcquisition({
             withLifecycleLock: withContainerLifecycleLockAsync,
             recoverPredecessors(prefix) {
-                const report = sessionClaims.reconcileSessionClaimsInHeldLifecycleLock(prefix, undefined, recovery);
-                if (!report.error) return;
-                if (!report.restrictedAdmission) throw report.error;
-                retainedAdmission = report.restrictedAdmission;
-                retainedRecovery = {
-                    containerId: verifyRetainedTarget(retainedAdmission.containerId), runtime: runtimeInvocation.runtime,
-                    diagnostic: report.error.message.slice(0, 1536),
-                };
-                return retainedRecovery;
+                sessionClaims.recoverPredecessorsInHeldLifecycleLock(prefix);
             },
             reserve: sessionClaims.reserveSessionLockInHeldLifecycleLock,
             initializeCapture(binding, lockFile) {
@@ -279,16 +225,7 @@ export async function acquireHostSessionOwnership(
                 ownershipAuthorization = () => assertNativeSessionOwnership(captured);
                 setupSignalHandlers();
             },
-            inspectExisting(binding) {
-                const inspected = inspectExisting(binding);
-                const revalidate = <T>(result: T): T => {
-                    // Acquisition performs one last inspection after its foreign
-                    // claim pass. Keep the original receipts pinned through it.
-                    if (retainedOwnPath) revalidateRetainedCohort(retainedOwnPath);
-                    return result;
-                };
-                return inspected instanceof Promise ? inspected.then(revalidate) : revalidate(inspected);
-            },
+            inspectExisting,
             async arm() {
                 await armOwnershipInContext(rollbackOwn, true);
                 if (acquisitionFailure) throw acquisitionFailure;
@@ -299,29 +236,10 @@ export async function acquireHostSessionOwnership(
                     throw new Error("Existing session ownership acknowledgement was superseded.");
                 }
                 sessionPublication.captureAcknowledgedContainer(id);
-                if (retainedAdmission) retainedOwnPath = sessionCleanup.getCurrentSession().lockFile ?? undefined;
             },
             reconcileForeign(prefix, lockFile) {
                 if (acquisitionFailure) throw acquisitionFailure;
-                if (retainedRecovery) {
-                    revalidateRetainedCohort(lockFile);
-                    verifyRetainedTarget(retainedRecovery.containerId, lockFile);
-                    return sessionClaims.getSessionLockClaimsForContainer(prefix).some(name => name !== basename(lockFile));
-                }
-                const report = sessionClaims.reconcileSessionClaimsInHeldLifecycleLock(prefix, lockFile, recovery);
-                if (report.error) {
-                    if (!report.restrictedAdmission) throw report.error;
-                    retainedAdmission = report.restrictedAdmission;
-                    retainedOwnPath = lockFile;
-                    retainedRecovery = {
-                        containerId: retainedAdmission.containerId, runtime: runtimeInvocation.runtime,
-                        diagnostic: report.error.message.slice(0, 1536),
-                    };
-                    // Acquisition latches this restriction before its final native
-                    // inspection revalidates the captured cohort and reservation.
-                    return retainedRecovery;
-                }
-                return report.claims.some(name => name !== basename(lockFile));
+                return sessionClaims.reconcileForeignClaimsInHeldLifecycleLock(prefix, lockFile);
             },
             async rollback() {
                 try {
@@ -477,8 +395,7 @@ export function getSessionLockClaimsForContainer(containerPrefix: string, recove
     if (sessionClaimPrefix(getProjectId(recovery.projectPath), recovery.profile) !== containerPrefix) {
         throw new Error("Session reconciliation project/profile does not match its lifecycle guard.");
     }
-    const scope = sessionRecoveryScope(getRuntimeInvocation(), recovery.inspectContainer);
-    const result = sessionClaims.reconcileSessionClaimsInHeldLifecycleLock(containerPrefix, undefined, scope);
+    const result = sessionClaims.reconcileSessionClaimsInHeldLifecycleLock(containerPrefix);
     if (result.error) console.warn(`[ccc] ${result.error.message}`);
     return result.claims;
 }

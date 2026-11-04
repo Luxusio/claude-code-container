@@ -1223,15 +1223,24 @@ describe("session.ts", () => {
             expect(mockUnlinkSync).not.toHaveBeenCalled();
         });
 
-        it("preserves a dead Windows legacy claim because process absence does not settle guardian responsibility", () => {
+        it.each([
+            ["legacy", "4242"],
+            ["version 2", JSON.stringify({ version: 2, pid: 4242, startToken: "windows:old-start" })],
+            ["direct", JSON.stringify({ version: 3, pid: 4242, startToken: "windows:old-start", ownershipKind: "direct" })],
+            ["monitored", JSON.stringify({ version: 3, pid: 4242, startToken: "windows:old-start", ownershipKind: "monitored" })],
+        ])("omits a dead Windows %s claim from active queries without removing its files", (_kind, content) => {
             vi.spyOn(process, "platform", "get").mockReturnValue("win32");
             mockExistsSync.mockReturnValue(true);
             mockReaddirSync.mockReturnValue(["proj-abc--legacy.lock"]);
-            mockReadFileSync.mockReturnValue("4242");
+            mockReadFileSync.mockReturnValue(content);
             mockSpawnSync.mockReturnValue({ status: 0, stdout: "MISSING\n", stderr: "" });
 
-            expect(getActiveSessionsForContainer("proj-abc")).toEqual(["proj-abc--legacy.lock"]);
+            expect(getActiveSessionsForContainer("proj-abc")).toEqual([]);
+            expect(getActiveSessionsForProject("proj-abc")).toEqual([]);
+            expect(getActiveSessionsForProjectFamily("proj-abc")).toEqual([]);
+            expect(getSessionLockClaimsForContainer("proj-abc")).toEqual(["proj-abc--legacy.lock"]);
             expect(mockUnlinkSync).not.toHaveBeenCalled();
+            expect(mockNativeEnumeration).not.toHaveBeenCalled();
         });
 
         it("omits a stale direct claim after definitive non-Windows ps absence without unlinking", () => {
@@ -1496,6 +1505,64 @@ describe("session.ts", () => {
             ]);
             expect(mockReadFileSync).not.toHaveBeenCalled();
             expect(mockUnlinkSync).not.toHaveBeenCalled();
+        });
+
+        it("reconciles a dead monitored parent despite malformed historical sidecars without container effects", () => {
+            const name = "proj-abc--stale.lock";
+            const lockFile = join(fixtureLocks, name);
+            const projectPath = resolve("/home/user/project");
+            mockGetProjectId.mockReturnValue("proj-abc");
+            mockReaddirSync.mockReturnValue([name]);
+            fixtureWrite(lockFile, JSON.stringify({ version: 3, pid: 4242, startToken: null, ownershipKind: "monitored" }));
+            fixtureWrite(`${lockFile}.guardian.json`, "unreadable historical guardian metadata");
+            fixtureWrite(`${lockFile}.runtime.json`, "obsolete historical runtime metadata");
+            vi.spyOn(process, "kill").mockImplementation(() => {
+                throw Object.assign(new Error("missing parent"), { code: "ESRCH" });
+            });
+            const inspectContainer = vi.fn(() => { throw new Error("Stale reconciliation must not inspect a container"); });
+
+            expect(getSessionLockClaimsForContainer("proj-abc", { projectPath, inspectContainer })).toEqual([]);
+
+            expect(mockUnlinkSync.mock.calls.map(([path]) => path)).toEqual([
+                lockFile, `${lockFile}.guardian.json`, `${lockFile}.runtime.json`,
+            ]);
+            expect([lockFile, `${lockFile}.guardian.json`, `${lockFile}.runtime.json`].some(path => claimFiles.has(path))).toBe(false);
+            expect(inspectContainer).not.toHaveBeenCalled();
+            expect(mockNativeEnumeration).not.toHaveBeenCalled();
+            expect(mockSpawnSync).not.toHaveBeenCalled();
+            expect(mockCleanupOwnerDevices).not.toHaveBeenCalled();
+        });
+
+        it("preserves a changed historical sidecar after removing the exact dead parent claim", () => {
+            const name = "proj-abc--stale.lock";
+            const lockFile = join(fixtureLocks, name);
+            const guardian = `${lockFile}.guardian.json`;
+            const runtime = `${lockFile}.runtime.json`;
+            const projectPath = resolve("/home/user/project");
+            mockGetProjectId.mockReturnValue("proj-abc");
+            mockReaddirSync.mockReturnValue([name]);
+            fixtureWrite(lockFile, JSON.stringify({ version: 3, pid: 4242, startToken: null, ownershipKind: "monitored" }));
+            fixtureWrite(guardian, "old guardian metadata");
+            fixtureWrite(runtime, "old runtime metadata");
+            const originalGuardian = claimFiles.get(guardian)!;
+            vi.spyOn(process, "kill").mockImplementation(() => {
+                throw Object.assign(new Error("missing parent"), { code: "ESRCH" });
+            });
+            mockUnlinkSync.mockImplementation((path: string) => {
+                if (path === lockFile) fixtureWrite(guardian, originalGuardian.content);
+            });
+            const inspectContainer = vi.fn();
+
+            expect(getSessionLockClaimsForContainer("proj-abc", { projectPath, inspectContainer })).toEqual([]);
+
+            expect(claimFiles.has(lockFile)).toBe(false);
+            expect(claimFiles.has(runtime)).toBe(false);
+            expect(claimFiles.get(guardian)?.content).toBe(originalGuardian.content);
+            expect(claimFiles.get(guardian)?.inode).not.toBe(originalGuardian.inode);
+            expect(mockUnlinkSync).not.toHaveBeenCalledWith(guardian);
+            expect(inspectContainer).not.toHaveBeenCalled();
+            expect(mockNativeEnumeration).not.toHaveBeenCalled();
+            expect(mockSpawnSync).not.toHaveBeenCalled();
         });
     });
 
@@ -2101,7 +2168,7 @@ describe("session.ts", () => {
             );
         });
 
-        it("checks sessions, removes its lock, and stops the container inside one lifecycle critical section", () => {
+        it("rechecks sessions before stopping the container and removing its lock inside one lifecycle critical section", () => {
             const projectId = "my-project-abc123";
             const current = `${projectId}--current.lock`;
             const order: string[] = [];
@@ -2131,7 +2198,10 @@ describe("session.ts", () => {
             setSessionContainerId(PINNED_ID);
             cleanupSession();
 
-            expect(order).toEqual(["critical-start", "session-check", "stop", "unlink", "critical-end"]);
+            expect(order).toEqual(["critical-start", "session-check", "session-check", "stop", "unlink", "critical-end"]);
+            expect(mockSpawnSync).toHaveBeenCalledWith(fixtureInvocation.executable, stopArgs(PINNED_ID),
+                { stdio: "ignore", timeout: 30_000, killSignal: "SIGKILL", shell: false, env: expect.any(Object) });
+            expect(mockUnlinkSync).toHaveBeenCalledWith(join(fixtureLocks, current));
         });
 
         it("does not stop during cleanup when a foreign lock is temporarily unreadable", () => {

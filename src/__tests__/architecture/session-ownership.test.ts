@@ -697,7 +697,8 @@ describe("native ownership receipt and binding", () => {
         expect(nativeSessionOwnershipMatches(ownedReceipt)).toBe(false);
         expect(() => assertNativeSessionOwnership(ownedReceipt)).toThrow();
         expect(() => removeCapturedNativeSessionOwnership(ownedReceipt)).toThrow();
-        await expect(cleanupCapturedNativeSessionOwnership(ownedBinding, ownedReceipt, "must-never-stop", runtimeInvocation)).rejects.toThrow(/responsibility-incomplete/);
+        await expect(rollbackCapturedNativeSessionOwnership(ownedBinding, ownedReceipt)).resolves.toBeUndefined();
+        await expect(cleanupCapturedNativeSessionOwnership(ownedBinding, ownedReceipt, "must-never-stop", runtimeInvocation)).resolves.toBeUndefined();
         expect(readFileSync(ownedBinding.lockFile, "utf8")).toBe(replacement);
     });
 
@@ -710,9 +711,26 @@ describe("native ownership receipt and binding", () => {
         expect(successor.inode).not.toBe(ownedReceipt.inode);
         expect(nativeSessionOwnershipMatches(ownedReceipt)).toBe(false);
         expect(() => removeCapturedNativeSessionOwnership(ownedReceipt)).toThrow();
-        await expect(rollbackCapturedNativeSessionOwnership(ownedBinding, ownedReceipt)).rejects.toThrow(/responsibility-incomplete/);
-        await expect(cleanupCapturedNativeSessionOwnership(ownedBinding, ownedReceipt, "must-never-stop", runtimeInvocation)).rejects.toThrow(/responsibility-incomplete/);
+        await expect(rollbackCapturedNativeSessionOwnership(ownedBinding, ownedReceipt)).resolves.toBeUndefined();
+        await expect(cleanupCapturedNativeSessionOwnership(ownedBinding, ownedReceipt, "must-never-stop", runtimeInvocation)).resolves.toBeUndefined();
         expect(captureNativeSessionOwnership(ownedBinding.lockFile)).toEqual(successor);
+    });
+
+    it("a removed main receipt revokes rollback and cleanup without touching surviving auxiliaries", async () => {
+        const paths = [`${ownedBinding.lockFile}.guardian.json`, `${ownedBinding.lockFile}.runtime.json`];
+        const original = paths.map(path => readFileSync(path));
+        removeCapturedNativeSessionOwnership(ownedReceipt);
+        await expect(rollbackCapturedNativeSessionOwnership(ownedBinding, ownedReceipt)).resolves.toBeUndefined();
+        await expect(cleanupCapturedNativeSessionOwnership(ownedBinding, ownedReceipt, containerId, runtimeInvocation)).resolves.toBeUndefined();
+        expect(paths.map(path => readFileSync(path))).toEqual(original);
+        expect(existsSync(join(nativeEnvironment.home, ".ccc", "devices"))).toBe(false);
+    });
+
+    it.each(["malformed", "oversized"])("a %s current record is unobservable rather than revoked", async kind => {
+        writeFileSync(ownedBinding.lockFile, kind === "malformed" ? "not an owner" : "x".repeat(4097));
+        await expect(rollbackCapturedNativeSessionOwnership(ownedBinding, ownedReceipt)).rejects.toThrow();
+        await expect(cleanupCapturedNativeSessionOwnership(ownedBinding, ownedReceipt, containerId, runtimeInvocation)).rejects.toThrow();
+        expect(existsSync(ownedBinding.lockFile)).toBe(true);
     });
 
     it("an unreadable/non-file own path fails closed and survives guarded cleanup", async () => {
@@ -721,7 +739,8 @@ describe("native ownership receipt and binding", () => {
         expect(() => captureNativeSessionOwnership(ownedBinding.lockFile)).toThrow();
         expect(nativeSessionOwnershipMatches(ownedReceipt)).toBe(false);
         expect(() => removeCapturedNativeSessionOwnership(ownedReceipt)).toThrow();
-        await expect(cleanupCapturedNativeSessionOwnership(ownedBinding, ownedReceipt, "must-never-stop", runtimeInvocation)).rejects.toThrow(/responsibility-incomplete/);
+        await expect(rollbackCapturedNativeSessionOwnership(ownedBinding, ownedReceipt)).rejects.toThrow();
+        await expect(cleanupCapturedNativeSessionOwnership(ownedBinding, ownedReceipt, "must-never-stop", runtimeInvocation)).rejects.toThrow();
         expect(existsSync(ownedBinding.lockFile)).toBe(true);
     });
 
@@ -732,7 +751,8 @@ describe("native ownership receipt and binding", () => {
         expect(() => captureNativeSessionOwnership(ownedBinding.lockFile)).toThrow();
         expect(nativeSessionOwnershipMatches(ownedReceipt)).toBe(false);
         expect(() => removeCapturedNativeSessionOwnership(ownedReceipt)).toThrow();
-        await expect(cleanupCapturedNativeSessionOwnership(ownedBinding, ownedReceipt, "must-never-stop", runtimeInvocation)).rejects.toThrow(/responsibility-incomplete/);
+        await expect(rollbackCapturedNativeSessionOwnership(ownedBinding, ownedReceipt)).rejects.toThrow();
+        await expect(cleanupCapturedNativeSessionOwnership(ownedBinding, ownedReceipt, "must-never-stop", runtimeInvocation)).rejects.toThrow();
         expect(readFileSync(target)).toEqual(Buffer.from(ownedReceipt.bytes, "base64"));
         expect(existsSync(ownedBinding.lockFile)).toBe(true);
     });

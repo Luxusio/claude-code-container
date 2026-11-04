@@ -1,4 +1,4 @@
-import { assertNativeSessionOwnership, validateNativeSessionOwnership, withLifecycleLock, withLifecycleLockAsync } from "./session-ownership-native.js";
+import { assertNativeSessionOwnership, isNativeSessionOwnershipRevoked, validateNativeSessionOwnership, withLifecycleLock, withLifecycleLockAsync } from "./session-ownership-native.js";
 export { assertNativeSessionOwnership, rollbackCapturedNativeSessionOwnership, validateNativeSessionOwnership } from "./session-ownership-native.js";
 import { armSessionOwnership } from "../application/session-ownership.js";
 import { createSessionOwnershipPublication } from "../application/session-ownership-publication.js";
@@ -39,6 +39,7 @@ export async function cleanupCapturedNativeSessionOwnership(
     await runWithNativeRuntimeInvocation(captured, async () => {
         const prefix = sessionClaimPrefix(getProjectId(binding.projectPath), binding.profile);
         await withLifecycleLockAsync(prefix, () => {
+            if (isNativeSessionOwnershipRevoked(receipt)) return;
             const claims = createNativeSessionClaims(withLifecycleLock);
             claims.settleCapturedResponsibilityInHeldLifecycleLock(binding, receipt, captured);
         });

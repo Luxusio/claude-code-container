@@ -1,6 +1,6 @@
 import type { NativeRuntimeInvocation } from "./container-runtime-invocation.js";
 import type { ProcessStartObservation, SessionLockLiveness } from "../domain/session-lock.js";
-import type { SessionClaimDeviceDriftCandidate, SessionClaimObservationSnapshot, SessionClaimObservationStore } from "./session-claim-observation.js";
+import type { SessionClaimObservationSnapshot, SessionClaimObservationStore } from "./session-claim-observation.js";
 import type { SessionOwnershipReceipt } from "./session-ownership.js";
 
 /** Current project inspection and effects pinned to one native runtime invocation. */
@@ -23,7 +23,8 @@ export interface SessionClaimResponsibilityPorts {
     retireClaim(receipt: SessionOwnershipReceipt): undefined;
     observationStore: SessionClaimObservationStore;
     projectId(path: string): string;
-    verifyDeviceDriftContainer?(candidate: SessionClaimDeviceDriftCandidate): void;
+    /** Revoke an exact current claim after the caller positively verifies its owner is dead. */
+    retireStaleClaim?(receipt: SessionOwnershipReceipt): undefined;
     cleanup(snapshot: SessionClaimObservationSnapshot): void;
 }
 

@@ -134,6 +134,31 @@ else if (args[0] === 'stop') {
 const cp = require('node:child_process');
 const fs = require('node:fs');
 const originalSpawn = cp.spawn;
+const originalUnlink = fs.unlinkSync;
+fs.unlinkSync = function(file) {
+    if (process.argv[1] === ${JSON.stringify(ownerScript)} && process.argv[2] === 'recover-race'
+        && String(file) === fs.readFileSync(${JSON.stringify(join(root, "queued-claim"))}, 'utf8')) {
+        fs.writeFileSync(${JSON.stringify(join(root, "revocation-entered"))}, String(process.pid));
+        const deadline = Date.now() + 15000;
+        while (!fs.existsSync(${JSON.stringify(join(root, "release-revocation"))})) {
+            if (Date.now() > deadline) throw new Error('Owned stale revocation release did not occur');
+            Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+        }
+    }
+    return originalUnlink.apply(this, arguments);
+};
+const originalOpen = fs.openSync;
+fs.openSync = function(file, flags, ...rest) {
+    try { return originalOpen.call(this, file, flags, ...rest); }
+    catch (error) {
+        if (process.argv[1] === ${JSON.stringify(join(distribution, "session-ownership-guardian.js"))}
+            && String(file).endsWith('.container-lifecycle.guard') && flags === 'wx' && error.code === 'EEXIST'
+            && fs.existsSync(${JSON.stringify(join(root, "observe-guardian-wait"))})) {
+            fs.writeFileSync(${JSON.stringify(join(root, "guardian-waiting"))}, String(process.pid));
+        }
+        throw error;
+    }
+};
 cp.spawn = function(command, args, options) {
     const child = originalSpawn.apply(this, arguments);
     if (process.argv[1] === ${JSON.stringify(ownerScript)} && Array.isArray(args) && args.includes(${JSON.stringify(join(distribution, "session-ownership-guardian.js"))})) {
@@ -175,7 +200,7 @@ import { getProjectId } from ${moduleUrl("utils.js")};
 import { createNativeSessionClaims } from ${moduleUrl("composition/session-claims.js")};
 import { createNativeSessionClaimObservationStore } from ${moduleUrl("adapters/session-claim-observation.js")};
 import { captureNativeSessionOwnership } from ${moduleUrl("adapters/session-ownership.js")};
-import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 const mode = process.argv[2], project = ${JSON.stringify(join(root, "project"))};
 runtime.setRuntimeOverride('docker');
 let lock, guardian;
@@ -194,7 +219,7 @@ if (!mode.startsWith('recover') && mode !== 'query') {
         await runtime.runWithNativeRuntimeInvocation(runtime.getRuntimeInvocation(), prepare);
     } else await prepare();
 }
-if (mode !== 'recover-late') {
+if (mode !== 'recover-late' && mode !== 'recover-race') {
     writeFileSync(${JSON.stringify(alias)}, ${JSON.stringify(endpointB)});
     process.env.PATH = ${JSON.stringify(binB + ":" + dirname(process.execPath) + ":/usr/bin:/bin")};
     process.env.DOCKER_CONTEXT = 'redefined';
@@ -216,6 +241,13 @@ if (mode.startsWith('recover')) {
         let predecessorEnded = false;
         const acquired = await acquireHostSessionOwnership({projectId: prefix, projectPath: project}, () => {
             process.send({event: 'inspecting', claims: readdirSync(${JSON.stringify(join(home, ".ccc", "run", "locks"))}).filter(name => name.endsWith('.lock'))});
+            if (mode === 'recover-race') {
+                const deadline = Date.now() + 15000;
+                while (!existsSync(${JSON.stringify(join(root, "release-acquisition"))})) {
+                    if (Date.now() > deadline) throw new Error('Owned acquisition release did not occur');
+                    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+                }
+            }
             if (mode === 'recover-fail') throw new Error('Owned fixture failed join');
             if (mode === 'recover-late' && !predecessorEnded) {
                 const previous = JSON.parse(readFileSync(${JSON.stringify(join(root, "late-predecessor.json"))}, 'utf8'));
@@ -239,7 +271,7 @@ if (mode.startsWith('recover')) {
                 }
                 predecessorEnded = true;
             }
-            return {known: true, containerId: mode === 'recover-join' || mode === 'recover-late' ? ${JSON.stringify(exactId)} : null, runtime: 'docker',
+            return {known: true, containerId: mode === 'recover-join' || mode === 'recover-late' || mode === 'recover-race' ? ${JSON.stringify(exactId)} : null, runtime: 'docker',
                 ...(mode === 'recover-late' ? {running: true} : {})};
         });
         if (mode === 'recover-late') process.send({event: 'acquired', acquired});
@@ -369,7 +401,7 @@ process.on('message', async message => {
             env: { HOME: home, USERPROFILE: home, PATH: binA + ":" + dirname(process.execPath) + ":/usr/bin:/bin" + (options.extraPath ? ":" + options.extraPath : ""),
                 DOCKER_CONTEXT: "mutable", DOCKER_CONFIG: join(root, "config-a"),
                 TMPDIR: root, TMP: root, TEMP: root, CCC_DEVICE_BROKER_AUTO_START: "0",
-                ...(mode === "older-ack-failed" || mode.startsWith("delayed-") ? {NODE_OPTIONS: "--require " + JSON.stringify(ipcFaultPreload)} : {}) },
+                ...(mode === "older-ack-failed" || mode === "guardian-race" || mode === "recover-race" || mode.startsWith("delayed-") ? {NODE_OPTIONS: "--require " + JSON.stringify(ipcFaultPreload)} : {}) },
             stdio: ["ignore", "pipe", "pipe", "ipc"],
         });
         const owner: Owner = { child, messages: [], output: "" };
@@ -496,12 +528,11 @@ process.on('message', async message => {
         expect(stops()).toEqual([]);
     });
 
-    it("actual acquisition retains a predecessor that dies after reservation without stopping its joined container", async () => {
+    it("actual acquisition revokes a predecessor that dies after reservation and adopts its joined container", async () => {
         const previousOwner = launch("host");
         const previous = await frame(previousOwner, "ready");
         const claim = String(previous.lock);
         const paths = [claim, claim + ".guardian.json", claim + ".runtime.json"];
-        const before = paths.map(path => readFileSync(path));
         const parent = previousOwner.child.pid!, guardian = Number(previous.guardian);
         const parentToken = token(parent), guardianToken = token(guardian);
         expect(parentToken).toBeTypeOf("string");
@@ -514,19 +545,21 @@ process.on('message', async message => {
         const failure = successor.messages.find(message => message.event === "acquisition-failed");
         expect(failure, successor.output).toBeUndefined();
         const result = successor.messages.find(message => message.event === "acquired")!.acquired;
-        expect(result).toMatchObject({existingId: exactId, existingOnly: true});
+        expect(result).toMatchObject({existingId: exactId});
+        expect(result).not.toHaveProperty("existingOnly");
         const ready = await frame(successor, "ready");
         const observation = JSON.parse(readFileSync(String(ready.lock) + ".guardian.json", "utf8"));
         expect(observation.lastAcknowledged).toMatchObject({containerId: exactId, cleanupEnabled: false});
-        expect(paths.map(path => readFileSync(path))).toEqual(before);
+        expect(paths.map(existsSync)).toEqual([false, false, false]);
         expect(stops()).toEqual([]);
+        expect(trace().filter(call => call.command === "ps")).toEqual([]);
         expect(engineState()[endpointA]![exactId]).toBe(true);
         expect(engineState()[endpointB]![exactId]).toBe(true);
 
         successor.child.send({event: "eof"});
         await eventually(() => !existsSync(String(ready.lock)), "late acquisition's no-obligation retirement");
         await eventually(() => token(Number(ready.guardian)) === undefined, "late acquisition guardian exit");
-        expect(paths.map(path => readFileSync(path))).toEqual(before);
+        expect(paths.map(existsSync)).toEqual([false, false, false]);
         expect(stops()).toEqual([]);
     });
 
@@ -543,6 +576,7 @@ process.on('message', async message => {
         const before = [claim, claim + ".guardian.json", claim + ".runtime.json"].map(path => readFileSync(path));
         const queried = await frame(launch("query"), "query");
         expect(queried.claims).toContain(claim.slice(claim.lastIndexOf("/") + 1));
+        expect(queried.active).not.toContain(claim.slice(claim.lastIndexOf("/") + 1));
         expect(readFileSync(claim)).toEqual(receipt);
         expect([claim, claim + ".guardian.json", claim + ".runtime.json"].map(path => readFileSync(path))).toEqual(before);
         rmSync(join(root, "hold-stop"));
@@ -551,7 +585,7 @@ process.on('message', async message => {
         expectOnlyAStopped(2);
     });
 
-    it("after three failed stops and guardian death, the next admission recovers A before reserving under ambient B", async () => {
+    it("after three failed stops and guardian death, the next admission revokes stale presence and preserves A", async () => {
         writeFileSync(failures, "3");
         const owner = launch("guardian");
         const ready = await frame(owner, "ready"), claim = String(ready.lock);
@@ -563,55 +597,71 @@ process.on('message', async message => {
         const retained = JSON.parse(readFileSync(claim + ".guardian.json", "utf8"));
         expect(retained.recovery.status).toBe("recovery-needed");
         writeFileSync(failures, "0");
+        const effectsBeforeAdmission = trace().filter(call => call.command === "ps" || call.command === "stop");
         const successor = launch("recover");
         const acquired = await frame(successor, "ready");
-        expect(stops()).toHaveLength(4);
+        expect(stops()).toHaveLength(3);
         expect(stops().every(call => call.executable === "A" && call.endpoint === endpointA && call.id === exactId)).toBe(true);
-        expect(stops()[3]!.claimsAtStop).toEqual([claim.slice(claim.lastIndexOf("/") + 1)]);
+        expect(trace().filter(call => call.command === "ps" || call.command === "stop")).toEqual(effectsBeforeAdmission);
         const inspection = successor.messages.find(message => message.event === "inspecting")!;
         expect(inspection.claims).toEqual([String(acquired.lock).split("/").at(-1)]);
         for (const path of [claim, claim + ".guardian.json", claim + ".runtime.json"]) expect(existsSync(path)).toBe(false);
-        expect(engineState()[endpointA]![exactId]).toBe(false);
+        expect(engineState()[endpointA]![exactId]).toBe(true);
         expect(engineState()[endpointB]![exactId]).toBe(true);
         successor.child.send({event: "eof"});
         await eventually(() => !existsSync(String(acquired.lock)), "no-obligation successor rollback");
         await eventually(() => token(Number(acquired.guardian)) === undefined, "successor guardian exit");
-        expect(stops()).toHaveLength(4);
+        expect(stops()).toHaveLength(3);
     }, 30_000);
 
-    it("a cleanup-disabled join cannot erase a dead predecessor's obligation while its live guardian is between retries", async () => {
-        writeFileSync(failures, "1");
-        const predecessor = launch("guardian");
+    it.each([0, 1])("revoking stale presence while its real guardian queues preserves the new same-container session (prior failures %s)", async priorFailures => {
+        writeFileSync(failures, String(priorFailures));
+        const predecessor = launch("guardian-race");
         const previous = await frame(predecessor, "ready"), claim = String(previous.lock);
+        const guardianPid = Number(previous.guardian);
+        expect(token(guardianPid)).toBe(guardians.get(guardianPid));
+        if (!priorFailures) process.kill(guardianPid, "SIGSTOP");
         predecessor.child.send({event: "eof"});
         await eventually(() => predecessor.child.exitCode !== null, "predecessor parent exit");
         const guard = join(home, ".ccc", "run", "locks", claim.split("/").at(-1)!.split("--")[0] + ".container-lifecycle.guard");
-        await eventually(() => stops().length === 1 && !existsSync(guard), "failed stop's released guard before retry");
-        const guardianPid = Number(previous.guardian);
-        expect(token(guardianPid)).toBe(guardians.get(guardianPid));
-        process.kill(guardianPid, "SIGSTOP");
-        const receipt = readFileSync(claim);
-        const successor = launch("recover-join");
-        const joined = await frame(successor, "ready");
+        if (priorFailures) {
+            await eventually(() => stops().length === 1 && !existsSync(guard), "failed stop's released guard before retry");
+            expect(token(guardianPid)).toBe(guardians.get(guardianPid));
+            process.kill(guardianPid, "SIGSTOP");
+        }
+        const effectsBeforeAdmission = trace().filter(call => call.command === "ps" || call.command === "stop");
+        writeFileSync(alias, endpointA);
+        writeFileSync(join(root, "observe-guardian-wait"), "observe real guard contention");
+        writeFileSync(join(root, "queued-claim"), claim);
+        const successor = launch("recover-race");
+        await eventually(() => existsSync(join(root, "revocation-entered")), "successor's held-guard stale revocation");
         expect(existsSync(claim)).toBe(true);
-        expect(readFileSync(claim)).toEqual(receipt);
-        expect(JSON.parse(readFileSync(String(joined.lock) + ".guardian.json", "utf8")).lastAcknowledged)
-            .toMatchObject({containerId: exactId, cleanupEnabled: false});
-        successor.child.send({event: "eof"});
-        await eventually(() => !existsSync(String(joined.lock)), "failed join's own claim rollback");
-        await eventually(() => token(Number(joined.guardian)) === undefined, "failed join's guardian exit");
-        expect(readFileSync(claim)).toEqual(receipt);
-        expect(stops()).toHaveLength(1);
+        expect(existsSync(guard)).toBe(true);
         expect(token(guardianPid)).toBe(guardians.get(guardianPid));
         process.kill(guardianPid, "SIGCONT");
-        await eventually(() => !existsSync(claim), "original obligation's successful retry");
-        await eventually(() => token(guardianPid) === undefined, "original guardian completion");
-        expect(stops()).toHaveLength(2);
-        expect(stops().every(call => call.executable === "A" && call.endpoint === endpointA && call.id === exactId)).toBe(true);
+        await eventually(() => existsSync(join(root, "guardian-waiting")), "old guardian queued on the successor's lifecycle guard");
+        expect(readFileSync(join(root, "guardian-waiting"), "utf8")).toBe(String(guardianPid));
+        writeFileSync(join(root, "release-revocation"), "revoke stale presence with old guardian queued");
+        const inspecting = await frame(successor, "inspecting");
+        expect(existsSync(claim)).toBe(false);
+        expect(inspecting.claims).toHaveLength(1);
+        expect(token(guardianPid)).toBe(guardians.get(guardianPid));
+        writeFileSync(join(root, "release-acquisition"), "release successor acquisition");
+        const joined = await frame(successor, "ready");
+        await eventually(() => token(guardianPid) === undefined, "revoked guardian terminal completion");
+        expect(existsSync(String(joined.lock))).toBe(true);
+        expect(JSON.parse(readFileSync(String(joined.lock) + ".guardian.json", "utf8")).lastAcknowledged)
+            .toMatchObject({containerId: exactId, cleanupEnabled: false});
+        expect(trace().filter(call => call.command === "ps" || call.command === "stop")).toEqual(effectsBeforeAdmission);
+        expect(engineState()[endpointA]![exactId]).toBe(true);
         expect(engineState()[endpointB]![exactId]).toBe(true);
+        successor.child.send({event: "eof"});
+        await eventually(() => !existsSync(String(joined.lock)), "successor's own claim rollback");
+        await eventually(() => token(Number(joined.guardian)) === undefined, "successor guardian exit");
+        expect(stops()).toHaveLength(priorFailures);
     }, 30_000);
 
-    it("an intent followed by parent death before its positive callback retains uncertainty and never infers a stop", async () => {
+    it("an unconfirmed startup intent does not block stale-presence revocation after parent death", async () => {
         const owner = launch("startup-intent");
         const ready = await frame(owner, "ready"), claim = String(ready.lock);
         expect(JSON.parse(readFileSync(claim + ".guardian.json", "utf8"))).toMatchObject({
@@ -625,10 +675,12 @@ process.on('message', async message => {
         expect(engineState()[endpointA]![exactId]).toBe(true);
         expect(engineState()[endpointB]![exactId]).toBe(true);
         const successor = launch("recover");
-        await frame(successor, "acquisition-failed");
-        expect(successor.messages.some(message => message.event === "inspecting")).toBe(false);
-        expect(readdirSync(join(home, ".ccc", "run", "locks")).filter(name => name.endsWith(".lock"))).toEqual([claim.split("/").at(-1)]);
+        const joined = await frame(successor, "ready");
+        expect(successor.messages.some(message => message.event === "inspecting")).toBe(true);
+        expect(existsSync(claim)).toBe(false);
+        expect(readdirSync(join(home, ".ccc", "run", "locks")).filter(name => name.endsWith(".lock"))).toEqual([String(joined.lock).split("/").at(-1)]);
         expect(stops()).toEqual([]);
+        expect(trace().filter(call => call.command === "ps")).toEqual([]);
     }, 30_000);
 
     it("an older unsent standalone grant cannot overwrite a newer held startup intent when confirmation settles", async () => {
@@ -699,7 +751,7 @@ process.on('message', async message => {
         expect(JSON.parse(readFileSync(join(root, "held-real-ack.json"), "utf8"))).toEqual(held);
     }, 30_000);
 
-    it("a positive own-start survives an earlier rejected real IPC update and is recoverable after both processes exit", async () => {
+    it("a positive own-start survives a rejected real IPC update until stale presence is revoked without stopping", async () => {
         const owner = launch("older-ack-failed");
         await frame(owner, "older-update-rejected");
         const failed = await frame(owner, "own-start-publication-failed"), claim = String(failed.lock);
@@ -717,14 +769,14 @@ process.on('message', async message => {
         expect(stops()).toEqual([]);
         const successor = launch("recover");
         await frame(successor, "ready");
-        expect(stops()).toHaveLength(1);
-        expect(stops()[0]).toMatchObject({executable: "A", endpoint: endpointA, id: exactId});
+        expect(stops()).toEqual([]);
+        expect(trace().filter(call => call.command === "ps")).toEqual([]);
         expect(existsSync(claim)).toBe(false);
-        expect(engineState()[endpointA]![exactId]).toBe(false);
+        expect(engineState()[endpointA]![exactId]).toBe(true);
         expect(engineState()[endpointB]![exactId]).toBe(true);
     }, 30_000);
 
-    it("an all-dead equal-authority cohort retains one deterministic obligation and stops the exact target once", async () => {
+    it("public acquisition revokes every all-dead claim without probing or stopping the existing container", async () => {
         const first = launch("guardian"), firstReady = await frame(first, "ready");
         const second = launch("guardian"), secondReady = await frame(second, "ready");
         const cohort = [firstReady, secondReady];
@@ -748,15 +800,14 @@ process.on('message', async message => {
         expect(stops()).toEqual([]);
         const successor = launch("recover");
         await frame(successor, "ready");
-        expect(stops()).toHaveLength(1);
-        expect(stops()[0]).toMatchObject({executable: "A", endpoint: endpointA, id: exactId});
-        expect(stops()[0]!.claimsAtStop).toEqual([claims[0]!.split("/").at(-1)]);
+        expect(stops()).toEqual([]);
+        expect(trace().filter(call => call.command === "ps")).toEqual([]);
         expect(claims.every(path => !existsSync(path))).toBe(true);
-        expect(engineState()[endpointA]![exactId]).toBe(false);
+        expect(engineState()[endpointA]![exactId]).toBe(true);
         expect(engineState()[endpointB]![exactId]).toBe(true);
     }, 30_000);
 
-    it("public acquisition recovers dead local Docker obligations differing only in captured PATH with one exact stop", async () => {
+    it("public acquisition ignores dead claims' captured PATH while preserving every existing container", async () => {
         const localEndpoint = "unix://" + join(root, "owned-engine.sock");
         writeFileSync(state, JSON.stringify({ ...engineState(), [localEndpoint]: { [exactId]: true } }));
         const first = launch("guardian", { endpoint: localEndpoint, extraPath: join(root, "first-path") });
@@ -802,13 +853,10 @@ process.on('message', async message => {
         await eventually(() => successor.messages.some(message => ["ready", "acquisition-failed"].includes(String(message.event))), "local cohort recovery");
         expect(successor.messages.find(message => message.event === "acquisition-failed"), successor.output).toBeUndefined();
         await frame(successor, "ready");
-        expect(stops()).toHaveLength(1);
-        expect(stops()[0]).toMatchObject({ executable: "A", endpoint: localEndpoint, id: exactId,
-            path: invocations[0]!.selectors.PATH, claimsAtStop: [claims[0]!.split("/").at(-1)] });
-        expect(stops()[0]!.args).toContain("--tlsverify=true");
-        expect(stops()[0]!.args).toContain("--tlscacert=" + join(root, "tls", "docker", "ca.pem"));
+        expect(stops()).toEqual([]);
+        expect(trace().filter(call => call.command === "ps")).toEqual([]);
         for (const claim of claims) for (const suffix of ["", ".guardian.json", ".runtime.json"]) expect(existsSync(claim + suffix)).toBe(false);
-        expect(engineState()[localEndpoint]![exactId]).toBe(false);
+        expect(engineState()[localEndpoint]![exactId]).toBe(true);
         expect(engineState()[endpointA]![exactId]).toBe(true);
         expect(engineState()[endpointB]![exactId]).toBe(true);
     }, 30_000);
