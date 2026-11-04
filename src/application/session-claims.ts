@@ -5,7 +5,7 @@ import { canTransferSessionClaimObligation, currentSessionClaimAuthority, select
 import type { SessionClaimRuntimeEquality } from "../domain/session-claim-observation.js";
 import { sessionLockOwner, type SessionLockLiveness, type SessionLockOwner } from "../domain/session-lock.js";
 import type { NativeRuntimeInvocation } from "../ports/container-runtime-invocation.js";
-import type { SessionClaimObservationSnapshot } from "../ports/session-claim-observation.js";
+import type { SessionClaimDeviceDriftCandidate, SessionClaimObservationSnapshot } from "../ports/session-claim-observation.js";
 import type { SessionClaimsPorts, SessionClaimResponsibilityPorts, SessionClaimRecoveryScope } from "../ports/session-claims.js";
 import type { SessionCleanupPeerVetoes, SessionCleanupSettlement } from "../ports/session-cleanup.js";
 import type { SessionOwnershipBinding, SessionOwnershipReceipt } from "../ports/session-ownership.js";
@@ -71,6 +71,8 @@ interface ObservedClaim {
     owner: SessionLockOwner | null;
     receipt: SessionOwnershipReceipt | null;
     snapshot: SessionClaimObservationSnapshot | null;
+    deviceDriftCandidate: SessionClaimDeviceDriftCandidate | null;
+    observationError: unknown;
     parent: SessionLockLiveness;
     guardian: SessionLockLiveness;
 }
@@ -96,12 +98,14 @@ export function createSessionClaims(ports: SessionClaimsPorts) {
         return sessionLockClaimsForProjectFamily(ports.listEntries(), projectId);
     }
 
-    function observeClaims(prefix: string, names = getSessionLockClaimsForContainer(prefix)): ObservedClaim[] {
+    function observeClaims(prefix: string, names = getSessionLockClaimsForContainer(prefix), includeDeviceDrift = false): ObservedClaim[] {
         const qualified = ports.responsibility;
         const claims = names.map(name => {
             let content: string | null = null;
             let receipt: SessionOwnershipReceipt | null = null;
             let snapshot: SessionClaimObservationSnapshot | null = null;
+            let deviceDriftCandidate: SessionClaimDeviceDriftCandidate | null = null;
+            let observationError: unknown;
             try {
                 if (qualified) ({ content, receipt } = qualified.captureClaim(name));
                 else content = ports.readClaim(name);
@@ -109,24 +113,90 @@ export function createSessionClaims(ports: SessionClaimsPorts) {
             const owner = content === null ? null : sessionLockOwner(content);
             if (qualified && receipt && owner?.ownershipKind === "monitored") {
                 try { snapshot = qualified.observationStore.read(receipt, { prefix }); }
-                catch { /* A main claim never proves its auxiliary evidence is current. */ }
+                catch (error) {
+                    observationError = error;
+                    // Candidates are available only to explicit held-lock recovery.
+                    // Ordinary observation never relaxes durable file identity.
+                    if (includeDeviceDrift && qualified.observationStore.deviceDriftRecovery) {
+                        try { deviceDriftCandidate = qualified.observationStore.deviceDriftRecovery.capture(receipt, { prefix }); }
+                        catch (recoveryError) { observationError = recoveryError; }
+                    }
+                }
             }
-            return { name, content, owner, receipt, snapshot, parent: "unknown" as SessionLockLiveness,
+            return { name, content, owner, receipt, snapshot, deviceDriftCandidate, observationError, parent: "unknown" as SessionLockLiveness,
                 guardian: "unknown" as SessionLockLiveness };
         });
         const owners = ports.observeOwners(claims.flatMap(item => [
-            ...(item.owner ? [item.owner.pid] : []), ...(item.snapshot ? [item.snapshot.observation.guardian.pid] : []),
+            ...(item.owner ? [item.owner.pid] : []),
+            ...(item.snapshot || item.deviceDriftCandidate ? [(item.snapshot ?? item.deviceDriftCandidate)!.observation.guardian.pid] : []),
         ]));
         for (const item of claims) {
             try {
                 if (item.content !== null) item.parent = ports.classify(item.content, owners);
-                if (item.snapshot) {
-                    const guardian = item.snapshot.observation.guardian;
+                const evidence = item.snapshot ?? item.deviceDriftCandidate;
+                if (evidence) {
+                    const guardian = evidence.observation.guardian;
                     item.guardian = ports.classify(encodeSessionClaim(guardian.pid, guardian.startToken), owners);
                 }
             } catch { /* Unknown liveness grants no retirement authority. */ }
         }
         return claims;
+    }
+
+    function repairDeviceDriftInHeldLifecycleLock(prefix: string, captured: ObservedClaim[]): void {
+        const native = responsibility();
+        const recovery = native.observationStore.deviceDriftRecovery;
+        if (!recovery || !native.verifyDeviceDriftContainer) {
+            throw incomplete("Native device receipt recovery is unavailable; the existing records were preserved.");
+        }
+        const changed = () => incomplete("Device receipt recovery cohort could not be qualified or changed; cleanup responsibility remains retained.");
+        const first = captured.find(item => item.deviceDriftCandidate)?.deviceDriftCandidate;
+        const target = first && currentSessionClaimAuthority(first.observation)?.containerId;
+        if (!first || !target) throw changed();
+        const runtimeInvocation = first.runtimeInvocation;
+
+        function qualify(fresh: ObservedClaim[]): void {
+            if (fresh.length !== captured.length || captured.some(item => !fresh.some(peer => peer.name === item.name))) throw changed();
+            for (const original of captured) {
+                const current = fresh.find(item => item.name === original.name)!;
+                const expected = original.snapshot ?? original.deviceDriftCandidate;
+                const evidence = current.snapshot ?? current.deviceDriftCandidate;
+                const observation = evidence?.observation;
+                const ack = observation?.lastAcknowledged;
+                if (!original.receipt || !current.receipt || !current.owner || current.owner.ownershipKind !== "monitored"
+                    || current.parent !== "stale" || current.guardian !== "stale" || !expected || !evidence
+                    || JSON.stringify(current.receipt) !== JSON.stringify(original.receipt)
+                    || JSON.stringify(observation) !== JSON.stringify(expected.observation)
+                    || !sameRuntime(evidence.runtimeInvocation, expected.runtimeInvocation)
+                    || !sameRuntime(evidence.runtimeInvocation, runtimeInvocation)
+                    || observation?.registration !== "ready" || observation.pending !== null
+                    || ack?.generation !== observation.generation || !ack.cleanupEnabled || ack.containerId !== target
+                    || currentSessionClaimAuthority(observation)?.containerId !== target
+                    || !native.matchesClaim(original.receipt)) throw changed();
+                if (original.snapshot) native.observationStore.assertCurrent(original.snapshot);
+                else recovery!.assertCurrent(original.deviceDriftCandidate!);
+            }
+            const names = getSessionLockClaimsForContainer(prefix);
+            if (names.length !== fresh.length || fresh.some(item => !names.includes(item.name))) throw changed();
+        }
+
+        const revalidate = () => qualify(observeClaims(prefix, undefined, true));
+        qualify(captured);
+        for (const item of captured) {
+            const candidate = item.deviceDriftCandidate;
+            if (!candidate) continue;
+            recovery.assertCurrent(candidate);
+            native.verifyDeviceDriftContainer(candidate);
+            recovery.assertCurrent(candidate);
+            revalidate();
+        }
+        for (const item of captured) {
+            const candidate = item.deviceDriftCandidate;
+            if (!candidate) continue;
+            item.snapshot = recovery.repair(candidate, revalidate);
+            item.deviceDriftCandidate = null;
+        }
+        revalidate();
     }
 
     function observedActive(names: string[], prefix?: string): string[] {
@@ -485,7 +555,11 @@ export function createSessionClaims(ports: SessionClaimsPorts) {
             failures.push(incomplete(`${JSON.stringify(name.slice(0, 180))}: ${reason}`, cause));
         };
         try {
-            const observed = observeClaims(prefix);
+            let observed = observeClaims(prefix, undefined, true);
+            if (observed.some(item => item.deviceDriftCandidate)) {
+                repairDeviceDriftInHeldLifecycleLock(prefix, observed);
+                observed = observeClaims(prefix);
+            }
             const claims = observed.filter(item => item.receipt?.path !== ownPath);
             const restrictedAdmission = retainedAdmission(prefix, claims, scope,
                 ownPath ? observed.find(item => item.receipt?.path === ownPath) : undefined);
@@ -504,7 +578,7 @@ export function createSessionClaims(ports: SessionClaimsPorts) {
                 } else if (item.owner.ownershipKind === undefined) {
                     legacy.push(item);
                 } else if (!item.snapshot) {
-                    failed(item.name, "monitored guardian responsibility is missing, unreadable or replaced");
+                    failed(item.name, "monitored guardian responsibility is missing, unreadable or replaced", item.observationError);
                 } else if (item.guardian === "stale") {
                     if (noObligation(item.snapshot)) {
                         try { retireSnapshot(item.snapshot); }

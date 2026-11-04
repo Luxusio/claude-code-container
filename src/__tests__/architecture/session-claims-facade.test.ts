@@ -3,10 +3,11 @@ import { tmpdir } from "node:os";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as runtimeFacade from "../../container-runtime.js";
-import { preloadNativeRuntimeFixture } from "../helpers/native-runtime-fixture.js";
+import { nativeRuntimeInvocationFixture, preloadNativeRuntimeFixture } from "../helpers/native-runtime-fixture.js";
 import { sessionLockOwner } from "../../domain/session-lock.js";
 import { captureNativeSessionOwnership } from "../../adapters/session-ownership.js";
 import { createNativeSessionClaimObservationStore } from "../../adapters/session-claim-observation.js";
+import { createNativeSessionClaims } from "../../composition/session-claims.js";
 
 const effects = vi.hoisted(() => ({
     directory: "", stat: vi.fn(), random: vi.fn(), token: vi.fn(), observe: vi.fn(), classify: vi.fn(),
@@ -210,6 +211,73 @@ describe("scoped administrative claim reconciliation", () => {
             projectPath: root, inspectContainer: inspect,
         }))).toThrow(/project\/profile does not match/);
         expect(inspect).not.toHaveBeenCalled(); expect(readFileSync(legacy, "utf8")).toBe("4242"); expect(effects.spawn).not.toHaveBeenCalled();
+    });
+});
+
+describe("native Darwin device receipt recovery", () => {
+    it.each([
+        ["full ID", { status: 0, stdout: `${containerId}\n` }, true],
+        ["confirmed absence", { status: 0, stdout: "" }, true],
+        ["nonzero exit", { status: 1, stdout: containerId }, false],
+        ["signal", { status: 0, stdout: containerId, signal: "SIGTERM" }, false],
+        ["spawn error", { status: 0, stdout: containerId, error: new Error("unavailable") }, false],
+        ["multiple IDs", { status: 0, stdout: `${containerId}\n${"c".repeat(64)}\n` }, false],
+        ["another ID", { status: 0, stdout: "c".repeat(64) }, false],
+    ] as const)("uses recorded runtime A under ambient B for %s", (_kind, reply, accepted) => {
+        const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+        Object.defineProperty(process, "platform", { ...platform, value: "darwin" });
+        try {
+            const own = writeClaim("project--old.lock", { version: 3, pid: 4242, startToken: "old-parent", ownershipKind: "monitored" });
+            const paths = [own, `${own}.runtime.json`, `${own}.guardian.json`];
+            const receipt = captureNativeSessionOwnership(own), captured = runtimeFacade.getRuntimeInvocation();
+            const observations = createNativeSessionClaimObservationStore();
+            const binding = { lockFile: own, projectPath: root, prefix: "project", toolName: "claude" };
+            const initial = observations.begin({ receipt, binding, runtimeInvocation: captured,
+                guardian: { pid: 4343, startToken: "old-guardian" }, generation: "1" });
+            const ready = observations.update(initial, { ...initial.observation, registration: "ready",
+                lastAcknowledged: { generation: "1", sequence: 1, containerId, cleanupEnabled: true } });
+            const obsoleteDevice = String(BigInt(receipt.device) + 1n);
+            const drifted = { ...ready.observation, claim: { ...ready.observation.claim, device: obsoleteDevice },
+                runtime: { ...ready.observation.runtime, device: obsoleteDevice } };
+            writeFileSync(paths[2]!, JSON.stringify(drifted));
+            const original = paths.map(path => readFileSync(path, "utf8"));
+            expect(() => observations.read(receipt, binding)).toThrow();
+            const ambient = nativeRuntimeInvocationFixture();
+            runtimeFacade._setRuntimeInvocationForTest({ ...ambient, executable: "/ambient/runtime/docker",
+                transport: { kind: "docker", host: "unix:///ambient/engine.sock", configDirectory: "/ambient/config",
+                    tls: { enabled: false, verify: false, caFile: null, certFile: null, keyFile: null } } });
+            effects.classify.mockReturnValue("stale");
+            effects.cleanup.mockImplementation(() => {
+                expect(paths.slice(0, 2).map(path => readFileSync(path, "utf8"))).toEqual(original.slice(0, 2));
+                expect(JSON.parse(readFileSync(paths[2]!, "utf8"))).toEqual(ready.observation);
+                return { results: [] };
+            });
+            effects.spawn.mockImplementation((_program: string, args: string[]) => {
+                expect(held).toBe(true);
+                return args.includes("ps") ? reply : { status: 0 };
+            });
+            const claims = createNativeSessionClaims(session.withContainerLifecycleLock);
+            const scope = { runtimeInvocation: runtimeFacade.getRuntimeInvocation(), inspectContainer: vi.fn(), stopContainer: vi.fn() };
+            const result = session.withContainerLifecycleLock("project", () =>
+                claims.reconcileSessionClaimsInHeldLifecycleLock("project", undefined, scope));
+            const ps = ["ps", "-aq", "--no-trunc", "-f", `id=${containerId}`];
+            const calls = effects.spawn.mock.calls.map(([program, args]) => {
+                expect(program).toBe(captured.executable);
+                expect(args.slice(0, 4)).toEqual(["--config", "/fixture/config", "--host", "unix:///fixture/engine.sock"]);
+                return args.slice(args.includes("ps") ? args.indexOf("ps") : args.indexOf("stop"));
+            });
+            expect(scope.inspectContainer).not.toHaveBeenCalled(); expect(scope.stopContainer).not.toHaveBeenCalled();
+            if (accepted) {
+                expect(result).toEqual({ claims: [] }); expect(paths.map(existsSync)).toEqual([false, false, false]);
+                expect(effects.cleanup).toHaveBeenCalledOnce();
+                expect(calls).toEqual(reply.stdout ? [ps, ps, ["stop", containerId]] : [ps, ps]);
+            } else {
+                expect(result.error?.message).toMatch(/session-cleanup-responsibility-incomplete/);
+                expect(result.claims).toEqual(["project--old.lock"]);
+                expect(paths.map(path => readFileSync(path, "utf8"))).toEqual(original);
+                expect(calls).toEqual([ps]); expect(effects.cleanup).not.toHaveBeenCalled();
+            }
+        } finally { Object.defineProperty(process, "platform", platform); }
     });
 });
 

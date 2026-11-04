@@ -10,7 +10,7 @@ import type { SessionClaimObservation } from "../../domain/session-claim-observa
 import type { ProcessStartObservation, SessionLockLiveness } from "../../domain/session-lock.js";
 import { sessionLockOwner } from "../../domain/session-lock.js";
 import { NATIVE_RUNTIME_SELECTOR_KEYS, type NativeRuntimeInvocation, type NativeRuntimeSelectors } from "../../ports/container-runtime-invocation.js";
-import type { SessionClaimObservationSnapshot } from "../../ports/session-claim-observation.js";
+import type { SessionClaimDeviceDriftCandidate, SessionClaimObservationSnapshot } from "../../ports/session-claim-observation.js";
 import type { SessionClaimRecoveryScope, SessionClaimsPorts } from "../../ports/session-claims.js";
 import type { SessionOwnershipReceipt } from "../../ports/session-ownership.js";
 
@@ -181,6 +181,67 @@ function fixture(entries: string[] = [], contents: Record<string, string> = {}) 
     const alive = (pid: number, token: string) => observations.set(pid, { status: "found", token });
     return { app, ports, trace, names, records, receipts, snapshots, writes, removals, cleanups, batches,
         observations, attach, install, inGuard, recover, dead, alive, isHeld: () => held };
+}
+
+/** Native qualification is covered by the adapter tests; this seam models its pinned candidates. */
+function deviceDrift(f: ReturnType<typeof fixture>, driftNames: string[] = [old]) {
+    const store = f.ports.responsibility!.observationStore;
+    const read = store.read;
+    const candidates = new Map<string, SessionClaimDeviceDriftCandidate>();
+    const sources = new Map<string, SessionClaimObservationSnapshot>();
+    const effects: string[] = [];
+    let captures = 0;
+    for (const name of driftNames) {
+        const initial = f.snapshots.get(name)!;
+        const observation = { ...initial.observation,
+            claim: { ...initial.observation.claim, device: "99" }, runtime: { ...initial.observation.runtime, device: "99" } };
+        const source = { ...initial, observation, observationReceipt: { ...initial.observationReceipt,
+            bytes: Buffer.from(JSON.stringify(observation)).toString("base64") } };
+        f.snapshots.set(name, source);
+        sources.set(name, source);
+        candidates.set(source.receipt.path, { observation, receipt: source.receipt, runtimeInvocation: source.runtimeInvocation });
+    }
+    store.read = (receipt, binding) => {
+        if (candidates.has(receipt.path)) throw new Error("persisted device changed");
+        return read(receipt, binding);
+    };
+    const assertCandidate = (candidate: SessionClaimDeviceDriftCandidate) => {
+        if (candidates.get(candidate.receipt.path) !== candidate) throw new Error("candidate superseded");
+        store.assertCurrent(sources.get(f.ports.claimName(candidate.receipt.path))!);
+    };
+    store.deviceDriftRecovery = {
+        capture(receipt, binding) {
+            captures++;
+            const candidate = candidates.get(receipt.path);
+            if (!candidate || candidate.observation.binding.prefix !== binding.prefix) return null;
+            assertCandidate(candidate);
+            if (JSON.stringify(candidate.receipt) !== JSON.stringify(receipt)) throw new Error("claim replaced");
+            return candidate;
+        },
+        assertCurrent: assertCandidate,
+        repair(candidate, revalidate) {
+            expect(f.isHeld()).toBe(true);
+            assertCandidate(candidate);
+            revalidate();
+            revalidate();
+            assertCandidate(candidate);
+            const source = sources.get(f.ports.claimName(candidate.receipt.path))!;
+            const observation = { ...candidate.observation,
+                claim: { ...candidate.observation.claim, device: candidate.receipt.device },
+                runtime: { ...candidate.observation.runtime, device: source.runtimeReceipt.device } };
+            const normalized = { ...source, observation, observationReceipt: { ...source.observationReceipt,
+                inode: `${source.observationReceipt.inode}0`, bytes: Buffer.from(JSON.stringify(observation)).toString("base64") } };
+            effects.push(`repair:${candidate.receipt.path}`);
+            f.snapshots.set(f.ports.claimName(candidate.receipt.path), normalized);
+            candidates.delete(candidate.receipt.path);
+            return normalized;
+        },
+    };
+    f.ports.responsibility!.verifyDeviceDriftContainer = candidate => {
+        expect(f.isHeld()).toBe(true);
+        effects.push(`verify:${candidate.receipt.path}`);
+    };
+    return { candidates, effects, captures: () => captures };
 }
 
 /** Exercise the real peer-veto and settlement policy while keeping native effects explicit. */
@@ -492,6 +553,145 @@ describe("guarded predecessor responsibility recovery", () => {
     });
 });
 
+
+describe("guarded Darwin device receipt recovery", () => {
+    function ready(names = [old]) {
+        const f = fixture(names, Object.fromEntries(names.map((name, index) => [name, monitored(7 + index)])));
+        for (const [index, name] of names.entries()) {
+            const snapshot = f.attach(name, { ownStarted: { generation, containerId: fullId } });
+            f.dead(7 + index); f.dead(snapshot.observation.guardian.pid);
+        }
+        const drift = deviceDrift(f, names);
+        return { f, drift };
+    }
+
+    it("verifies and repairs a positively dead candidate before ordinary exact cleanup and retirement", () => {
+        const { f, drift } = ready();
+        const original = drift.candidates.get(`/claims/${old}`)!;
+        f.recover();
+        expect(drift.effects).toEqual([`verify:/claims/${old}`, `repair:/claims/${old}`]);
+        expect(f.cleanups).toHaveLength(1);
+        const recovered = f.cleanups[0].observation;
+        expect(recovered).toEqual({ ...original.observation,
+            claim: { ...original.observation.claim, device: original.receipt.device },
+            runtime: { ...original.observation.runtime, device: "1" } });
+        expect(f.cleanups[0].runtimeInvocation).toEqual(original.runtimeInvocation);
+        expect(f.batches.some(pids => pids.includes(7) && pids.includes(107))).toBe(true);
+        expect(f.names).toEqual([]);
+        expect(f.snapshots.size).toBe(0);
+    });
+
+    it("keeps raw and active queries free of candidate capture, verification and repair", () => {
+        const { f, drift } = ready();
+        expect(f.app.getSessionLockClaimsForContainer("project")).toEqual([old]);
+        expect(f.app.getActiveSessionsForContainer("project")).toEqual([old]);
+        expect(f.app.getActiveSessionsForProjectFamily("project")).toEqual([old]);
+        expect(drift.captures()).toBe(0);
+        expect(drift.effects).toEqual([]);
+        expect(f.cleanups).toEqual([]);
+    });
+
+    it.each(["owner-live", "owner-unknown", "guardian-live", "guardian-unknown"] as const)("preserves all evidence when %s", state => {
+        const { f, drift } = ready();
+        if (state === "owner-live") f.alive(7, "owner-start");
+        if (state === "guardian-live") f.alive(107, "guardian-start");
+        if (state === "owner-unknown") f.observations.set(7, { status: "unknown" });
+        if (state === "guardian-unknown") f.observations.set(107, { status: "unknown" });
+        expect(() => f.recover()).toThrow(/session-cleanup-responsibility-incomplete/);
+        expect(drift.effects).toEqual([]);
+        expect(f.cleanups).toEqual([]);
+        expect(f.names).toEqual([old]);
+    });
+
+    it.each(["legacy", "missing-observation", "different-target", "different-runtime", "pending", "cleanup-disabled"] as const)("refuses a cohort containing %s evidence", state => {
+        const { f, drift } = ready();
+        f.install(other, state === "legacy" ? versioned(8) : monitored(8));
+        f.dead(8);
+        if (state !== "legacy" && state !== "missing-observation") {
+            const peer = f.attach(other, state === "different-target"
+                ? { lastAcknowledged: { generation, sequence: 1, containerId: differentId, cleanupEnabled: true } }
+                : state === "pending" ? { pending: { generation, sequence: 2, kind: "startup", containerId: null, cleanupEnabled: false } }
+                : state === "cleanup-disabled" ? { lastAcknowledged: { generation, sequence: 1, containerId: fullId, cleanupEnabled: false } } : {},
+            state === "different-runtime" ? invocation("unix:///another-engine.sock") : invocation());
+            f.dead(peer.observation.guardian.pid);
+        }
+        expect(() => f.recover()).toThrow(/session-cleanup-responsibility-incomplete/);
+        expect(drift.effects).toEqual([]);
+        expect(f.cleanups).toEqual([]);
+        expect(f.names).toEqual([old, other]);
+    });
+
+    it.each(["new-peer", "main-replaced", "observation-replaced", "guardian-revived", "native-error", "ambiguous-id"] as const)("rejects %s after native verification without publication", state => {
+        const { f, drift } = ready();
+        f.ports.responsibility!.verifyDeviceDriftContainer = () => {
+            drift.effects.push("native-probe");
+            if (state === "new-peer") f.install(other, monitored(8));
+            if (state === "main-replaced") f.install(old, monitored(7));
+            if (state === "observation-replaced") f.snapshots.set(old, { ...f.snapshots.get(old)! });
+            if (state === "guardian-revived") f.alive(107, "guardian-start");
+            if (state === "native-error" || state === "ambiguous-id") throw new Error("native identity unavailable");
+        };
+        expect(() => f.recover()).toThrow(/session-cleanup-responsibility-incomplete/);
+        expect(drift.effects).toEqual(["native-probe"]);
+        expect(f.cleanups).toEqual([]);
+        expect(f.names).toContain(old);
+        expect(drift.candidates.has(`/claims/${old}`)).toBe(true);
+    });
+
+    it("rechecks process generations inside the final publication callback", () => {
+        const { f, drift } = ready();
+        const recovery = f.ports.responsibility!.observationStore.deviceDriftRecovery!;
+        const repair = recovery.repair;
+        recovery.repair = (candidate, revalidate) => {
+            f.alive(107, "guardian-start");
+            return repair(candidate, revalidate);
+        };
+        expect(() => f.recover()).toThrow(/session-cleanup-responsibility-incomplete/);
+        expect(drift.effects).toEqual([`verify:/claims/${old}`]);
+        expect(f.cleanups).toEqual([]);
+        expect(f.names).toEqual([old]);
+    });
+
+    it("pins native verification and cleanup to recorded A while admission supplies ambient B", () => {
+        const { f, drift } = ready();
+        const recorded = drift.candidates.get(`/claims/${old}`)!;
+        f.ports.responsibility!.verifyDeviceDriftContainer = candidate => {
+            expect(candidate.runtimeInvocation).toEqual(invocation());
+            expect(candidate.observation.lastAcknowledged?.containerId).toBe(fullId);
+            drift.effects.push("verify-recorded-A");
+        };
+        const scope: SessionClaimRecoveryScope = { runtimeInvocation: invocation("unix:///ambient-b.sock"),
+            inspectContainer() { throw new Error("Ambient inspection must not qualify device receipt recovery"); },
+            stopContainer() { throw new Error("Ambient stop must not recover recorded A"); } };
+        f.recover(scope);
+        expect(drift.effects).toEqual(["verify-recorded-A", `repair:/claims/${old}`]);
+        expect(f.cleanups[0].runtimeInvocation).toEqual(recorded.runtimeInvocation);
+        expect(f.names).toEqual([]);
+    });
+
+    it("refreshes a repaired entry before qualifying and publishing another cohort member", () => {
+        const { f, drift } = ready([old, other]);
+        policyCleanup(f);
+        f.recover();
+        expect(drift.effects).toEqual([`verify:/claims/${old}`, `verify:/claims/${other}`,
+            `repair:/claims/${old}`, `repair:/claims/${other}`]);
+        expect(f.names).toEqual([]);
+        expect(f.removals).toHaveLength(2);
+    });
+
+    it("verifies every original native target before publishing any member of the cohort", () => {
+        const { f, drift } = ready([old, other]);
+        f.ports.responsibility!.verifyDeviceDriftContainer = candidate => {
+            drift.effects.push(`verify:${candidate.receipt.path}`);
+            if (candidate.receipt.path.endsWith(other)) throw new Error("second native observation unavailable");
+        };
+        expect(() => f.recover()).toThrow(/session-cleanup-responsibility-incomplete/);
+        expect(drift.effects).toEqual([`verify:/claims/${old}`, `verify:/claims/${other}`]);
+        expect(f.names).toEqual([old, other]);
+        expect(f.cleanups).toEqual([]);
+        expect([...drift.candidates.keys()]).toHaveLength(2);
+    });
+});
 
 describe("project-scoped automatic legacy reconciliation", () => {
     function recovery(f: ReturnType<typeof fixture>, initial: ReturnType<SessionClaimRecoveryScope["inspectContainer"]>) {

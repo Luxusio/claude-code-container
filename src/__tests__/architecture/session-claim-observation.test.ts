@@ -1,6 +1,6 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-    chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync,
+    chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -143,7 +143,7 @@ describe("durable guardian authority", () => {
 
 describe("private native guardian evidence store", () => {
     let root: string;
-    beforeEach(() => { root = mkdtempSync(join(tmpdir(), "ccc-claim-observation-")); chmodSync(root, 0o700); });
+    beforeEach(() => { root = realpathSync(mkdtempSync(join(tmpdir(), "ccc-claim-observation-"))); chmodSync(root, 0o700); });
     afterEach(() => { rmSync(root, { recursive: true, force: true }); });
 
     function fixture(options: { longRuntime?: boolean } = {}) {
@@ -166,6 +166,168 @@ describe("private native guardian evidence store", () => {
             guardian: { pid: process.pid + 1, startToken: "guardian-start" }, generation });
         return { store, begin, receipt, binding, runtimeInvocation };
     }
+
+    describe.skipIf(typeof process.geteuid !== "function")("guarded Darwin device drift recovery", () => {
+        const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+        beforeEach(() => { Object.defineProperty(process, "platform", { configurable: true, value: "darwin" }); });
+        afterEach(() => { vi.restoreAllMocks(); Object.defineProperty(process, "platform", platform); });
+
+        function driftFixture() {
+            const f = fixture();
+            const initial = f.begin();
+            const published = f.store.update(initial, { ...initial.observation, registration: "ready",
+                lastAcknowledged: { generation, sequence: 7, containerId: fullId, cleanupEnabled: true },
+                ownStarted: { generation, containerId: fullId } });
+            const oldDevice = String(BigInt(published.receipt.device) + 17n);
+            const stored = { ...published.observation,
+                claim: { ...published.observation.claim, device: oldDevice },
+                runtime: { ...published.observation.runtime, device: oldDevice } };
+            writeFileSync(published.observationReceipt.path, JSON.stringify(stored));
+            return { ...f, published, stored, recovery: f.store.deviceDriftRecovery! };
+        }
+
+        it("repairs only both persisted device fields and then resumes strict snapshot checks", () => {
+            const f = driftFixture();
+            const main = readFileSync(f.receipt.path);
+            const runtime = readFileSync(f.published.runtimeReceipt.path);
+            const mainStat = statSync(f.receipt.path, { bigint: true });
+            const runtimeStat = statSync(f.published.runtimeReceipt.path, { bigint: true });
+            expect(() => f.store.read(f.receipt, f.binding)).toThrow();
+            const candidate = f.recovery.capture(f.receipt, f.binding)!;
+            expect(Object.keys(candidate).sort()).toEqual(["observation", "receipt", "runtimeInvocation"]);
+            expect(candidate.observation).toEqual(f.stored);
+            expect(() => f.recovery.assertCurrent({ ...candidate })).toThrow();
+            expect(() => createNativeSessionClaimObservationStore().deviceDriftRecovery!.assertCurrent(candidate)).toThrow();
+            const revalidate = vi.fn();
+            const repaired = f.recovery.repair(candidate, revalidate);
+            expect(revalidate).toHaveBeenCalledTimes(2);
+            expect(repaired.observation).toEqual({ ...f.stored,
+                claim: { ...f.stored.claim, device: f.receipt.device },
+                runtime: { ...f.stored.runtime, device: f.published.runtimeReceipt.device } });
+            expect(JSON.parse(readFileSync(repaired.observationReceipt.path, "utf8"))).toEqual(repaired.observation);
+            expect(readFileSync(f.receipt.path)).toEqual(main);
+            expect(readFileSync(f.published.runtimeReceipt.path)).toEqual(runtime);
+            expect(statSync(f.receipt.path, { bigint: true }).ino).toBe(mainStat.ino);
+            expect(statSync(f.published.runtimeReceipt.path, { bigint: true }).ino).toBe(runtimeStat.ino);
+            expect(f.store.read(f.receipt, f.binding)).toEqual(repaired);
+            expect(f.store.matches(repaired)).toBe(true);
+            expect(f.recovery.capture(f.receipt, f.binding)).toBeNull();
+            expect(() => f.recovery.assertCurrent(candidate)).toThrow();
+            expect(() => f.store.update(f.published, f.published.observation)).toThrow();
+        });
+
+        it.each(["linux", "win32"])("does not expose the recovery capability on %s", currentPlatform => {
+            Object.defineProperty(process, "platform", { configurable: true, value: currentPlatform });
+            expect(createNativeSessionClaimObservationStore().deviceDriftRecovery).toBeUndefined();
+        });
+
+        it.each(["claim-inode", "runtime-birthtime", "claim-digest", "runtime-digest", "owner-pid", "binding", "one-device", "different-devices"])(
+            "refuses %s disagreement beyond one consistent persisted device mapping", mismatch => {
+                const f = driftFixture();
+                const stored = structuredClone(f.stored);
+                if (mismatch === "claim-inode") stored.claim.inode = String(BigInt(stored.claim.inode) + 1n);
+                if (mismatch === "runtime-birthtime") stored.runtime.birthtime = String(BigInt(stored.runtime.birthtime) + 1n);
+                if (mismatch === "claim-digest") stored.claim.digest = "f".repeat(64);
+                if (mismatch === "runtime-digest") stored.runtime.digest = "f".repeat(64);
+                if (mismatch === "owner-pid") stored.claim.ownerPid++;
+                if (mismatch === "binding") stored.binding = { ...stored.binding, toolName: "different-tool" };
+                if (mismatch === "one-device") stored.runtime.device = f.published.runtimeReceipt.device;
+                if (mismatch === "different-devices") stored.runtime.device = String(BigInt(stored.runtime.device) + 1n);
+                writeFileSync(f.published.observationReceipt.path, JSON.stringify(stored));
+                expect(() => f.recovery.capture(f.receipt, f.binding)).toThrow();
+                expect(JSON.parse(readFileSync(f.published.observationReceipt.path, "utf8"))).toEqual(stored);
+            });
+
+        it.each(["main", "runtime", "guardian", "directory"])("refuses a public %s path", field => {
+            const f = driftFixture();
+            const path = field === "main" ? f.receipt.path : field === "runtime" ? f.published.runtimeReceipt.path
+                : field === "guardian" ? f.published.observationReceipt.path : root;
+            chmodSync(path, field === "directory" ? 0o755 : 0o644);
+            expect(() => f.recovery.capture(f.receipt, f.binding)).toThrow();
+        });
+
+        it("refuses evidence owned by a different effective user", () => {
+            const f = driftFixture();
+            vi.spyOn(process, "geteuid").mockReturnValue(process.geteuid!() + 1);
+            expect(() => f.recovery.capture(f.receipt, f.binding)).toThrow();
+        });
+
+        it.each(["main", "runtime", "guardian"])("refuses a hardlinked %s alias", field => {
+            const f = driftFixture();
+            const path = field === "main" ? f.receipt.path : field === "runtime" ? f.published.runtimeReceipt.path
+                : f.published.observationReceipt.path;
+            linkSync(path, `${path}.alias`);
+            expect(() => f.recovery.capture(f.receipt, f.binding)).toThrow();
+        });
+
+        it.for(["runtime", "guardian"] as const)("refuses a symbolic %s sidecar", (field, context) => {
+            const f = driftFixture();
+            const path = field === "runtime" ? f.published.runtimeReceipt.path : f.published.observationReceipt.path;
+            const original = readFileSync(path);
+            const target = `${path}.target`;
+            renameSync(path, target);
+            fileSymlinkOrSkip(context, target, path);
+            expect(() => f.recovery.capture(f.receipt, f.binding)).toThrow();
+            expect(readFileSync(target)).toEqual(original);
+        });
+
+        it.each(["main", "runtime", "guardian"])("preserves a same-byte %s replacement during final revalidation", field => {
+            const f = driftFixture();
+            const candidate = f.recovery.capture(f.receipt, f.binding)!;
+            const path = field === "main" ? f.receipt.path : field === "runtime" ? f.published.runtimeReceipt.path
+                : f.published.observationReceipt.path;
+            const original = readFileSync(path);
+            const oldInode = statSync(path, { bigint: true }).ino;
+            let checks = 0;
+            expect(() => f.recovery.repair(candidate, () => {
+                if (++checks === 2) {
+                    renameSync(path, `${path}.predecessor`);
+                    writeFileSync(path, original, { flag: "wx", mode: 0o600 });
+                }
+            })).toThrow();
+            expect(checks).toBe(2);
+            expect(statSync(path, { bigint: true }).ino).not.toBe(oldInode);
+            expect(readFileSync(path)).toEqual(original);
+            expect(readdirSync(root).some(name => name.endsWith(".tmp"))).toBe(false);
+        });
+
+        it("retains strict device comparisons during the current native capture", async () => {
+            const f = driftFixture();
+            let drift = false;
+            vi.resetModules();
+            vi.doMock("fs", async original => {
+                const actual = await original<typeof import("fs")>();
+                return { ...actual, lstatSync: (path: Parameters<typeof actual.lstatSync>[0], options: { bigint: true }) => {
+                    const stat = actual.lstatSync(path, options);
+                    if (drift && path === f.published.runtimeReceipt.path && typeof stat.dev === "bigint") {
+                        return Object.assign(Object.create(Object.getPrototypeOf(stat)), stat, { dev: stat.dev + 1n });
+                    }
+                    return stat;
+                } };
+            });
+            try {
+                const api = await import("../../adapters/session-claim-observation.js");
+                const ownership = await import("../../adapters/session-ownership.js");
+                const recovery = api.createNativeSessionClaimObservationStore().deviceDriftRecovery!;
+                const candidate = recovery.capture(f.receipt, f.binding)!;
+                expect(ownership.captureNativeSessionFile(f.published.runtimeReceipt.path, 65536)).toEqual(f.published.runtimeReceipt);
+                drift = true;
+                expect(() => recovery.assertCurrent(candidate)).toThrow();
+                expect(() => ownership.captureNativeSessionFile(f.published.runtimeReceipt.path, 65536)).toThrow();
+                expect(() => recovery.repair(candidate, vi.fn())).toThrow();
+                expect(JSON.parse(readFileSync(f.published.observationReceipt.path, "utf8"))).toEqual(f.stored);
+            } finally { vi.doUnmock("fs"); vi.resetModules(); }
+        });
+
+        it("does not publish when the stale-generation verifier refuses the repair", () => {
+            const f = driftFixture();
+            const candidate = f.recovery.capture(f.receipt, f.binding)!;
+            const original = readFileSync(f.published.observationReceipt.path);
+            expect(() => f.recovery.repair(candidate, () => { throw new Error("generation is no longer stale"); })).toThrow("no longer stale");
+            expect(readFileSync(f.published.observationReceipt.path)).toEqual(original);
+            expect(readdirSync(root).some(name => name.endsWith(".tmp"))).toBe(false);
+        });
+    });
 
     it.each(["4242", JSON.stringify({ version: 2, pid: 4242, startToken: "legacy-start" })])("positively distinguishes absent sidecars on a captured pre-v3 record: %s", content => {
         const f = fixture(); writeFileSync(f.binding.lockFile, content, { mode: 0o600 });

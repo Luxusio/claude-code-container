@@ -1,6 +1,7 @@
 import { randomBytes } from "crypto";
 import { createSessionClaimsStore } from "../adapters/session-claims-store.js";
 import { createNativeSessionClaimObservationStore } from "../adapters/session-claim-observation.js";
+import { bindNativeRuntimeInvocation } from "../adapters/container-runtime-invocation.js";
 import { createSessionClaims } from "../application/session-claims.js";
 import { currentSessionClaimAuthority } from "../domain/session-claim-observation.js";
 import { locksDir } from "../home-layout.js";
@@ -34,6 +35,22 @@ export function createNativeSessionClaims(withLifecycleLock: SessionClaimsPorts[
             retireClaim: store.retireClaim,
             observationStore: observations,
             projectId: (path) => getProjectId(path),
+            verifyDeviceDriftContainer(candidate) {
+                const authority = currentSessionClaimAuthority(candidate.observation);
+                if (!authority || !/^[a-f0-9]{64}$/.test(authority.containerId) || !observations.deviceDriftRecovery) {
+                    throw new Error("Session device receipt recovery has no exact native container authority.");
+                }
+                observations.deviceDriftRecovery.assertCurrent(candidate);
+                const runner = bindNativeRuntimeInvocation(candidate.runtimeInvocation);
+                const listed = runner.spawnSync(["ps", "-aq", "--no-trunc", "-f", `id=${authority.containerId}`], {
+                    encoding: "utf8", stdio: "pipe", timeout: 5000, killSignal: "SIGKILL", maxBuffer: 4096,
+                });
+                observations.deviceDriftRecovery.assertCurrent(candidate);
+                if (listed.error || listed.signal || listed.status !== 0 || typeof listed.stdout !== "string"
+                    || listed.stdout.trim() !== "" && listed.stdout.trim() !== authority.containerId) {
+                    throw new Error("Session device receipt recovery could not verify its exact native container.");
+                }
+            },
             cleanup(snapshot) {
                 const { binding } = snapshot.observation;
                 const authority = currentSessionClaimAuthority(snapshot.observation);
