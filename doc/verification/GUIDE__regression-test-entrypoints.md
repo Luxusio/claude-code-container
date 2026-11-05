@@ -8,6 +8,23 @@
 
 The root unit Vitest setup canonicalizes its temporary-directory base before fixture imports. MCP fixture transports also receive an explicitly owned private temp directory. Real Level 3 host setup stays separate. See [shared failure diagnosis](GUIDE__test-failure-groups.md) for path, native prerequisite and stale fixture groups and their evidence limits.
 
+When facade tests fail after a contract change, inspect the consumed exports and
+the implementation commit before changing production behavior. Clipboard native
+publication fixtures must supply `clipboardPortBindAdmission` as well as the
+boolean bind-user query; otherwise publication can defer before the IPC deadline
+assertion reaches daemon launch. Keep assertions that prove launch, late READY
+rejection, and absence of publication.
+
+Session regression fixtures follow the stale-claim reset introduced in
+`fc7411a5`: positively stale legacy records retire before reservation without a
+runtime stop; failed unlink remains a veto on each fresh attempt. A
+cleanup-disabled acknowledgement permits acquisition rollback, and a replaced
+receipt revokes the old guardian's cleanup while preserving the successor.
+Retain separate foreign-peer veto and no-stop assertions. These portable tests
+do not establish native macOS or Windows acceptance. The older predecessor
+recovery descriptions in the session requirement documents need separate
+reconciliation with that implementation change.
+
 Remote bind-authority failures preserve bounded, fixture-owned cancellation
 diagnostics under `results/ci/remote-bind-authority-*.json` before cleanup. CI's
 two Linux unit jobs upload only these files on failure; they do not publish

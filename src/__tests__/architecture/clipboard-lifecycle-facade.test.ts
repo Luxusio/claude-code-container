@@ -30,7 +30,11 @@ vi.mock("child_process", async original => {
 vi.mock("./../../utils.js", () => ({ CLIPBOARD_FILES_CONTAINER_DIR: "/clipboard-files" }));
 vi.mock("./../../home-layout.js", () => ({cccHome: () => native.root, clipboardFilesDir: () => join(native.root, "files"), clipboardPortFile: () => join(native.root, "port"), clipboardStartingLock: () => join(native.root, "lock"), helperBinDir: () => join(native.root, "bin"), locksDir: () => join(native.root, "locks")}));
 vi.mock("./../../clipboard-startup-lock.js", () => ({ tryAcquireClipboardStartupLock: native.acquire, recoverDeadClipboardStartupLock: native.recover, releaseClipboardStartupLock: native.release }));
-vi.mock("./../../clipboard-bind-users.js", () => ({ clipboardPortMayHaveBindUsers: native.bindUsers }));
+vi.mock("./../../clipboard-bind-users.js", () => ({
+    clipboardPortMayHaveBindUsers: native.bindUsers,
+    clipboardPortBindAdmission: (...args: unknown[]) => native.bindUsers(...args)
+        ? {allowed: false, reason: "bind-present"} : {allowed: true, reason: "clear"},
+}));
 vi.mock("./../../adapters/runtime-bind-authority.js", async actual => {
     const authority = await actual<typeof import("../../adapters/runtime-bind-authority.js")>();
     native.originalGlobal = authority.withRuntimeBindGuardAsync;

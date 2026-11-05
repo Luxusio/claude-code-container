@@ -219,10 +219,10 @@ require('node:module').syncBuiltinESMExports();
             writeFileSync(lock, bytes, { flag: "wx" });
         } else writeFileSync(foreign, String(process.pid), { flag: "wx" });
         await eventually(() => child.exitCode !== null, "retry authority veto");
-        expect(child.exitCode, stderr()).toBe(1);
+        expect(child.exitCode, stderr()).toBe(kind === "successor" ? 0 : 1);
         expect(stops()).toEqual([["stop", idA]]);
-        // A replaced receipt or an unqualified equal/unknown peer prevents
-        // completion; neither is proof that this obligation was discharged.
+        // A successor revokes the old receipt without touching its replacement.
+        // An unqualified peer still vetoes completion of the captured obligation.
         expect(existsSync(lock)).toBe(true);
         if (kind === "successor") expect(readFileSync(lock)).toEqual(bytes);
         else expect(readFileSync(foreign, "utf8")).toBe(String(process.pid));
@@ -990,7 +990,7 @@ export async function load(url, context, nextLoad) {
         expect(stops()).toEqual([]);
         candidate.child.send({ event: "resume-inspection", predecessorLock: predecessor.ready.lock });
         const observed = await frame(candidate, "diagnostic-observed");
-        expect(observed.active).toContain(basename(predecessor.ready.lock));
+        expect(observed.active).not.toContain(basename(predecessor.ready.lock));
         expect(observed.active).toContain(basename(inspected.lock));
         expect(observed.predecessorPresent).toBe(true);
         expect(existsSync(predecessor.ready.lock)).toBe(true);
